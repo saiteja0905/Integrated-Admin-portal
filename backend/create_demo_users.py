@@ -163,7 +163,7 @@ async def create_demo_users():
         else:
             print(f"⚠️ Job {job['title']} already exists")
     
-    await client.close()
+    client.close()
     print("\n🎉 Demo data creation completed!")
     print("\nDemo Login Credentials:")
     print("Customer: 9876543210 / password123")
