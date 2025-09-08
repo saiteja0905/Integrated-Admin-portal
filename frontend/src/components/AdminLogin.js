@@ -38,9 +38,8 @@ export const AdminLogin = () => {
         return;
       }
 
-      login(userData);
+      handleLogin(userData);
       toast.success('Admin login successful!');
-      navigate('/admin/dashboard');
     } catch (error) {
       toast.error(error.response?.data?.detail || 'Login failed');
     } finally {
