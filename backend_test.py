@@ -334,7 +334,7 @@ class ShidhaanAPITester:
 
     def run_all_tests(self):
         """Run all test suites"""
-        print("🚀 Starting Shidhaan API Tests...")
+        print("🚀 Starting Shidhaan API Tests - Phase 3 Features...")
         print(f"Testing against: {self.base_url}")
         
         try:
@@ -343,6 +343,8 @@ class ShidhaanAPITester:
             self.test_job_endpoints()
             self.test_worker_endpoints()
             self.test_application_endpoints()
+            self.test_bidding_endpoints()  # Phase 3 feature
+            self.test_assignment_endpoints()  # Phase 3 feature
             self.test_user_endpoints()
             self.test_error_handling()
             
