@@ -14,8 +14,15 @@ export const AdminLogin = () => {
   });
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
-  const { login } = useAuth();
   const navigate = useNavigate();
+
+  // We'll handle login directly since useAuth is in App.js
+  const handleLogin = (tokenData) => {
+    localStorage.setItem('token', tokenData.access_token);
+    axios.defaults.headers.common['Authorization'] = `Bearer ${tokenData.access_token}`;
+    // Reload the page to trigger auth state update
+    window.location.href = '/admin/dashboard';
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
