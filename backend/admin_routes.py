@@ -4,8 +4,8 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
-from .admin_models import *
-from .server import get_current_user, User, UserRole, db
+from admin_models import *
+from server import get_current_user, User, UserRole, db
 
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
 
