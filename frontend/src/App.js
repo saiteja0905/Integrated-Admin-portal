@@ -221,10 +221,11 @@ const Sidebar = ({ isOpen, onClose, activeRoute, setActiveRoute }) => {
       { name: 'Messages', icon: MessageCircle, route: 'messages' }
     ],
     admin: [
-      { name: 'Dashboard', icon: Home, route: 'admin' },
-      { name: 'Users', icon: Users, route: 'admin-users' },
-      { name: 'Jobs', icon: Briefcase, route: 'admin-jobs' },
-      { name: 'Disputes', icon: Settings, route: 'admin-disputes' }
+      { name: 'Dashboard', icon: Home, route: 'admin/dashboard' },
+      { name: 'User Management', icon: Users, route: 'admin/users' },
+      { name: 'Dispute Management', icon: Settings, route: 'admin/disputes' },
+      { name: 'Analytics', icon: TrendingUp, route: 'admin/analytics' },
+      { name: 'Jobs', icon: Briefcase, route: 'admin/jobs' }
     ]
   };
 
