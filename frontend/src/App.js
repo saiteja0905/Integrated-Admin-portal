@@ -1,7 +1,12 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { AdminLogin } from './components/AdminLogin';
-import { AdminDashboard, AdminUserManagement, AdminDisputeManagement, AdminAnalytics } from './components/AdminPortal';
+import { 
+  AdminDashboard as AdminDashboardComponent, 
+  AdminUserManagement as AdminUserManagementComponent, 
+  AdminDisputeManagement as AdminDisputeManagementComponent, 
+  AdminAnalytics as AdminAnalyticsComponent 
+} from './components/AdminPortal';
 import axios from 'axios';
 import { Toaster } from './components/ui/sonner';
 import { toast } from 'sonner';
