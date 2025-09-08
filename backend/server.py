@@ -1381,7 +1381,7 @@ async def get_admin_dashboard(current_user: User = Depends(require_admin_role())
             {"$match": {"role": "worker"}},
             {"$sort": {"rating_avg": -1, "reviews_count": -1}},
             {"$limit": 5},
-            {"$project": {"name": 1, "rating_avg": 1, "reviews_count": 1}}
+            {"$project": {"_id": 0, "name": 1, "rating_avg": 1, "reviews_count": 1}}
         ]
         
         top_workers = await db.users.aggregate(top_workers_pipeline).to_list(5)
