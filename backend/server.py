@@ -1315,6 +1315,14 @@ async def get_config(current_user: User = Depends(get_current_user)):
 # Include the router
 app.include_router(api_router)
 
+# Include admin routes
+try:
+    from .admin_routes import admin_router
+    app.include_router(admin_router, prefix="/api")
+except ImportError:
+    # Admin routes not available
+    pass
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
     client.close()
