@@ -2167,6 +2167,43 @@ function App() {
             }
           />
 
+          {/* Admin Routes */}
+          <Route
+            path="/admin"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminDashboard />
+              </ProtectedRoute>
+            }
+          />
+          
+          <Route
+            path="/admin-users"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminUserManagement />
+              </ProtectedRoute>
+            }
+          />
+          
+          <Route
+            path="/admin-disputes"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminDisputeManagement />
+              </ProtectedRoute>
+            }
+          />
+          
+          <Route
+            path="/admin-analytics"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminAnalytics />
+              </ProtectedRoute>
+            }
+          />
+
           <Route
             path="/post-job"
             element={
