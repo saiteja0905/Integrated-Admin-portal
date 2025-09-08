@@ -223,6 +223,85 @@ class ShidhaanAPITester:
         else:
             self.log_test("Apply to daily job", False, f"Status: {response.status_code if hasattr(response, 'status_code') else 'Request failed'}")
 
+    def test_bidding_endpoints(self):
+        """Test bidding endpoints for contractual jobs - PHASE 3 FEATURE"""
+        print("\n🔍 Testing Bidding Endpoints (Phase 3)...")
+        
+        if 'worker' not in self.tokens or 'customer' not in self.tokens:
+            print("   Skipping bidding tests - missing tokens")
+            return
+        
+        # Create a contractual job first
+        contractual_job_data = {
+            "title": "Kitchen Renovation Work",
+            "description": "Complete kitchen renovation including plumbing, electrical, and tiling work",
+            "category": "skilled",
+            "type": "contractual",
+            "location": {
+                "lat": 28.6139,
+                "lng": 77.2090,
+                "address": "Connaught Place, New Delhi"
+            },
+            "budget_amount": 50000.0,
+            "is_budget_negotiable": True
+        }
+        
+        success, response = self.make_request('POST', '/jobs', contractual_job_data, token=self.tokens['customer'])
+        if success:
+            contractual_job = response.json()
+            self.log_test("Create contractual job", 'id' in contractual_job)
+            
+            # Publish the contractual job
+            job_id = contractual_job['id']
+            success, response = self.make_request('PUT', f'/jobs/{job_id}/publish', token=self.tokens['customer'])
+            self.log_test("Publish contractual job", success)
+            
+            if success:
+                # Test placing a bid
+                bid_data = {
+                    "bid_amount": 45000,
+                    "visiting_charge": 500,
+                    "message": "I have 5 years of experience in kitchen renovations. I can complete this project in 2 weeks with high quality materials."
+                }
+                
+                success, response = self.make_request('POST', f'/jobs/{job_id}/bid', bid_data, token=self.tokens['worker'])
+                if success:
+                    bid_response = response.json()
+                    self.log_test("Place bid on contractual job", 'id' in bid_response)
+                    
+                    # Test get job bids (as customer)
+                    success, response = self.make_request('GET', f'/jobs/{job_id}/bids', token=self.tokens['customer'])
+                    if success:
+                        bids = response.json()
+                        self.log_test("Get job bids", isinstance(bids, list) and len(bids) > 0)
+                        
+                        # Test worker assignment for contractual job
+                        if bids:
+                            worker_id = self.users['worker']['id']
+                            success, response = self.make_request('POST', f'/jobs/{job_id}/assign?worker_id={worker_id}', token=self.tokens['customer'])
+                            self.log_test("Assign worker (contractual)", success)
+                    else:
+                        self.log_test("Get job bids", False, str(response))
+                else:
+                    self.log_test("Place bid on contractual job", False, str(response))
+        else:
+            self.log_test("Create contractual job", False, str(response))
+
+    def test_assignment_endpoints(self):
+        """Test job assignment endpoints - PHASE 3 FEATURE"""
+        print("\n🔍 Testing Assignment Endpoints (Phase 3)...")
+        
+        if 'worker' not in self.tokens or 'customer' not in self.tokens or 'created' not in self.jobs:
+            print("   Skipping assignment tests - missing requirements")
+            return
+        
+        # Test assignment for daily job (if we have applications)
+        job_id = self.jobs['created']['id']
+        worker_id = self.users['worker']['id']
+        
+        success, response = self.make_request('POST', f'/jobs/{job_id}/assign?worker_id={worker_id}', token=self.tokens['customer'])
+        self.log_test("Assign worker (daily job)", success)
+
     def test_user_endpoints(self):
         """Test user-related endpoints"""
         print("\n🔍 Testing User Endpoints...")
