@@ -1317,10 +1317,11 @@ app.include_router(api_router)
 
 # Include admin routes
 try:
-    from .admin_routes import admin_router
+    from admin_routes import admin_router
     app.include_router(admin_router, prefix="/api")
-except ImportError:
-    # Admin routes not available
+    print("✅ Admin routes loaded successfully")
+except ImportError as e:
+    print(f"⚠️ Admin routes not available: {e}")
     pass
 
 @app.on_event("shutdown")
