@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """
-Shidhaan Backend API Testing Suite
-Tests all API endpoints for the blue-collar marketplace
+Shidhaan Backend API Testing Suite - Phase 4 Complete Testing
+Tests all API endpoints for the blue-collar marketplace including:
+- Payment Integration (Razorpay + COD)
+- In-App Chat System
+- Review & Rating System
+- Advanced Search & Location Features
+- Notification System
 """
 
 import requests
 import sys
 import json
+import time
 from datetime import datetime
 
 class ShidhaanAPITester:
@@ -16,6 +22,11 @@ class ShidhaanAPITester:
         self.tokens = {}
         self.users = {}
         self.jobs = {}
+        self.assignments = {}
+        self.payments = {}
+        self.messages = {}
+        self.reviews = {}
+        self.notifications = {}
         self.tests_run = 0
         self.tests_passed = 0
         
