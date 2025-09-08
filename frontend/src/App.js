@@ -2162,7 +2162,7 @@ function App() {
               <ProtectedRoute>
                 {user?.role === 'customer' && <CustomerDashboard />}
                 {user?.role === 'worker' && <WorkerDashboard />}
-                {user?.role === 'admin' && <div className="p-6"><h1>Admin Dashboard</h1></div>}
+                {user?.role === 'admin' && <AdminDashboard />}
               </ProtectedRoute>
             }
           />
