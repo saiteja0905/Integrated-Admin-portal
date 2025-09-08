@@ -4,6 +4,9 @@ import axios from 'axios';
 import { Toaster } from './components/ui/sonner';
 import { toast } from 'sonner';
 
+// Import Admin Portal Components
+import { AdminDashboard, AdminUserManagement, AdminDisputeManagement, AdminAnalytics } from './components/AdminPortal';
+
 // Import Lucide icons
 import { 
   User, 
