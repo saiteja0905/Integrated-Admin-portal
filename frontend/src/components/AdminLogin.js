@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Shield, Lock, User, Eye, EyeOff, AlertCircle, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
-import { useAuth } from '../App';
+import React, { useContext } from 'react';
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
