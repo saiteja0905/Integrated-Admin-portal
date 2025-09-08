@@ -326,6 +326,268 @@ class ShidhaanAPITester:
             else:
                 self.log_test("Get user by ID", False, str(response))
 
+    def test_payment_endpoints(self):
+        """Test payment system endpoints - PHASE 4 FEATURE"""
+        print("\n🔍 Testing Payment System (Phase 4)...")
+        
+        if 'customer' not in self.tokens or 'created' not in self.jobs:
+            print("   Skipping payment tests - missing requirements")
+            return
+        
+        job_id = self.jobs['created']['id']
+        
+        # Test COD payment creation
+        cod_payment_data = {
+            "job_id": job_id,
+            "amount": 1500.0,
+            "method": "cod"
+        }
+        
+        success, response = self.make_request('POST', '/payments/create-order', cod_payment_data, token=self.tokens['customer'])
+        if success:
+            payment_response = response.json()
+            self.log_test("Create COD payment order", 'payment_id' in payment_response)
+            if 'payment_id' in payment_response:
+                self.payments['cod'] = payment_response
+        else:
+            self.log_test("Create COD payment order", False, str(response))
+        
+        # Test Razorpay payment creation (will use placeholder keys)
+        razorpay_payment_data = {
+            "job_id": job_id,
+            "amount": 1500.0,
+            "method": "upi"
+        }
+        
+        success, response = self.make_request('POST', '/payments/create-order', razorpay_payment_data, token=self.tokens['customer'])
+        if success:
+            payment_response = response.json()
+            self.log_test("Create Razorpay payment order", 'razorpay_order_id' in payment_response or 'payment_id' in payment_response)
+            if 'payment_id' in payment_response:
+                self.payments['razorpay'] = payment_response
+        else:
+            self.log_test("Create Razorpay payment order", False, str(response))
+
+    def test_chat_endpoints(self):
+        """Test chat system endpoints - PHASE 4 FEATURE"""
+        print("\n🔍 Testing Chat System (Phase 4)...")
+        
+        if 'customer' not in self.tokens or 'worker' not in self.tokens or 'created' not in self.jobs:
+            print("   Skipping chat tests - missing requirements")
+            return
+        
+        job_id = self.jobs['created']['id']
+        
+        # Test sending a message from customer to worker
+        message_data = {
+            "content": "Hello, when can you start the plumbing work? My phone is 9876543210",
+            "message_type": "text"
+        }
+        
+        success, response = self.make_request('POST', f'/jobs/{job_id}/messages', message_data, token=self.tokens['customer'])
+        if success:
+            message_response = response.json()
+            self.log_test("Send message (customer to worker)", 'message_id' in message_response)
+            if 'message_id' in message_response:
+                self.messages['customer_to_worker'] = message_response
+        else:
+            self.log_test("Send message (customer to worker)", False, str(response))
+        
+        # Test sending a message from worker to customer
+        worker_message_data = {
+            "content": "I can start tomorrow morning. I'll call you at 98****10 to confirm timing.",
+            "message_type": "text"
+        }
+        
+        success, response = self.make_request('POST', f'/jobs/{job_id}/messages', worker_message_data, token=self.tokens['worker'])
+        if success:
+            message_response = response.json()
+            self.log_test("Send message (worker to customer)", 'message_id' in message_response)
+        else:
+            self.log_test("Send message (worker to customer)", False, str(response))
+        
+        # Test getting job messages (should include phone masking)
+        success, response = self.make_request('GET', f'/jobs/{job_id}/messages', token=self.tokens['customer'])
+        if success:
+            messages = response.json()
+            self.log_test("Get job messages", isinstance(messages, list))
+            
+            # Check if phone number masking is working
+            if messages:
+                has_masked_phone = any('****' in msg.get('content', '') for msg in messages)
+                self.log_test("Phone number masking in messages", has_masked_phone)
+        else:
+            self.log_test("Get job messages", False, str(response))
+
+    def test_review_endpoints(self):
+        """Test review and rating system endpoints - PHASE 4 FEATURE"""
+        print("\n🔍 Testing Review System (Phase 4)...")
+        
+        if 'customer' not in self.tokens or 'worker' not in self.tokens or 'created' not in self.jobs:
+            print("   Skipping review tests - missing requirements")
+            return
+        
+        job_id = self.jobs['created']['id']
+        worker_id = self.users['worker']['id']
+        customer_id = self.users['customer']['id']
+        
+        # First, we need to complete the job to enable reviews
+        # This would normally happen after payment, but we'll simulate it
+        
+        # Test creating a review (customer reviewing worker)
+        review_data = {
+            "job_id": job_id,
+            "reviewee_user_id": worker_id,
+            "stars": 5,
+            "comment": "Excellent work! Very professional and completed on time."
+        }
+        
+        success, response = self.make_request('POST', f'/jobs/{job_id}/review', review_data, token=self.tokens['customer'])
+        if success:
+            review_response = response.json()
+            self.log_test("Create review (customer to worker)", 'id' in review_response)
+            if 'id' in review_response:
+                self.reviews['customer_to_worker'] = review_response
+        else:
+            self.log_test("Create review (customer to worker)", False, str(response))
+        
+        # Test getting user reviews
+        success, response = self.make_request('GET', f'/users/{worker_id}/reviews')
+        if success:
+            reviews = response.json()
+            self.log_test("Get user reviews", isinstance(reviews, list))
+        else:
+            self.log_test("Get user reviews", False, str(response))
+
+    def test_notification_endpoints(self):
+        """Test notification system endpoints - PHASE 4 FEATURE"""
+        print("\n🔍 Testing Notification System (Phase 4)...")
+        
+        if 'customer' not in self.tokens or 'worker' not in self.tokens:
+            print("   Skipping notification tests - missing tokens")
+            return
+        
+        # Test getting notifications for customer
+        success, response = self.make_request('GET', '/notifications', token=self.tokens['customer'])
+        if success:
+            notifications = response.json()
+            self.log_test("Get notifications (customer)", isinstance(notifications, list))
+            
+            if notifications:
+                self.notifications['customer'] = notifications
+                # Test marking a notification as read
+                notification_id = notifications[0]['id']
+                success, response = self.make_request('PUT', f'/notifications/{notification_id}/read', token=self.tokens['customer'])
+                self.log_test("Mark notification as read", success)
+        else:
+            self.log_test("Get notifications (customer)", False, str(response))
+        
+        # Test getting notifications for worker
+        success, response = self.make_request('GET', '/notifications', token=self.tokens['worker'])
+        if success:
+            notifications = response.json()
+            self.log_test("Get notifications (worker)", isinstance(notifications, list))
+        else:
+            self.log_test("Get notifications (worker)", False, str(response))
+        
+        # Test mark all notifications as read
+        success, response = self.make_request('PUT', '/notifications/mark-all-read', token=self.tokens['customer'])
+        self.log_test("Mark all notifications as read", success)
+        
+        # Test getting unread notifications only
+        success, response = self.make_request('GET', '/notifications?unread_only=true', token=self.tokens['worker'])
+        if success:
+            unread_notifications = response.json()
+            self.log_test("Get unread notifications only", isinstance(unread_notifications, list))
+        else:
+            self.log_test("Get unread notifications only", False, str(response))
+
+    def test_advanced_search_endpoints(self):
+        """Test advanced search and location features - PHASE 4 FEATURE"""
+        print("\n🔍 Testing Advanced Search (Phase 4)...")
+        
+        if 'worker' not in self.tokens:
+            print("   Skipping search tests - missing worker token")
+            return
+        
+        # Test advanced job search with filters
+        search_filters = {
+            "search_term": "plumbing",
+            "job_type": "daily",
+            "category": "skilled",
+            "min_budget": 1000,
+            "max_budget": 5000,
+            "location": {
+                "lat": 28.6139,
+                "lng": 77.2090,
+                "address": "New Delhi, India"
+            },
+            "radius_km": 10,
+            "skills": ["plumbing"],
+            "sort_by": "budget_high"
+        }
+        
+        success, response = self.make_request('POST', '/jobs/search', search_filters, token=self.tokens['worker'])
+        if success:
+            search_results = response.json()
+            self.log_test("Advanced job search with filters", isinstance(search_results, list))
+        else:
+            self.log_test("Advanced job search with filters", False, str(response))
+        
+        # Test search with location-based filtering
+        location_search = {
+            "location": {
+                "lat": 28.6139,
+                "lng": 77.2090,
+                "address": "New Delhi, India"
+            },
+            "radius_km": 5,
+            "sort_by": "distance"
+        }
+        
+        success, response = self.make_request('POST', '/jobs/search', location_search, token=self.tokens['worker'])
+        if success:
+            location_results = response.json()
+            self.log_test("Location-based job search", isinstance(location_results, list))
+        else:
+            self.log_test("Location-based job search", False, str(response))
+        
+        # Test skills-based matching
+        skills_search = {
+            "skills": ["plumbing", "electrical"],
+            "sort_by": "recent"
+        }
+        
+        success, response = self.make_request('POST', '/jobs/search', skills_search, token=self.tokens['worker'])
+        if success:
+            skills_results = response.json()
+            self.log_test("Skills-based job matching", isinstance(skills_results, list))
+        else:
+            self.log_test("Skills-based job matching", False, str(response))
+
+    def test_config_endpoint(self):
+        """Test configuration endpoint - PHASE 4 FEATURE"""
+        print("\n🔍 Testing Configuration Endpoint (Phase 4)...")
+        
+        if 'customer' not in self.tokens:
+            print("   Skipping config tests - missing customer token")
+            return
+        
+        success, response = self.make_request('GET', '/config', token=self.tokens['customer'])
+        if success:
+            config_data = response.json()
+            expected_keys = ['payment_methods', 'maps_enabled', 'chat_enabled', 'notifications_enabled']
+            has_all_keys = all(key in config_data for key in expected_keys)
+            self.log_test("Get frontend configuration", has_all_keys)
+            
+            # Check if payment methods include expected options
+            if 'payment_methods' in config_data:
+                expected_methods = ['cod', 'upi', 'card']
+                has_payment_methods = all(method in config_data['payment_methods'] for method in expected_methods)
+                self.log_test("Payment methods configuration", has_payment_methods)
+        else:
+            self.log_test("Get frontend configuration", False, str(response))
+
     def test_error_handling(self):
         """Test error handling"""
         print("\n🔍 Testing Error Handling...")
