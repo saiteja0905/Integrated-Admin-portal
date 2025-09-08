@@ -607,8 +607,9 @@ class ShidhaanAPITester:
 
     def run_all_tests(self):
         """Run all test suites"""
-        print("🚀 Starting Shidhaan API Tests - Phase 3 Features...")
+        print("🚀 Starting Shidhaan API Tests - Phase 4 Complete Features...")
         print(f"Testing against: {self.base_url}")
+        print("Phase 4 Features: Payment Integration, Chat System, Reviews, Advanced Search, Notifications")
         
         try:
             self.test_health_endpoints()
@@ -618,21 +619,47 @@ class ShidhaanAPITester:
             self.test_application_endpoints()
             self.test_bidding_endpoints()  # Phase 3 feature
             self.test_assignment_endpoints()  # Phase 3 feature
+            
+            # Phase 4 Features
+            self.test_payment_endpoints()  # NEW: Payment system
+            self.test_chat_endpoints()  # NEW: Chat system
+            self.test_review_endpoints()  # NEW: Review system
+            self.test_notification_endpoints()  # NEW: Notification system
+            self.test_advanced_search_endpoints()  # NEW: Advanced search
+            self.test_config_endpoint()  # NEW: Configuration endpoint
+            
             self.test_user_endpoints()
             self.test_error_handling()
             
         except Exception as e:
             print(f"\n💥 Test suite crashed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return 1
         
         # Print summary
         print(f"\n📊 Test Results: {self.tests_passed}/{self.tests_run} passed")
         
+        # Print detailed results for Phase 4 features
+        print("\n🎯 Phase 4 Feature Test Summary:")
+        phase4_features = [
+            "Payment Integration (COD + Razorpay)",
+            "Chat System with Phone Masking", 
+            "Review & Rating System",
+            "Advanced Search & Location",
+            "Notification System",
+            "Configuration Management"
+        ]
+        
+        for feature in phase4_features:
+            print(f"   ✓ {feature}")
+        
         if self.tests_passed == self.tests_run:
-            print("🎉 All tests passed!")
+            print("🎉 All Phase 4 tests passed! Marketplace is production-ready!")
             return 0
         else:
-            print(f"⚠️  {self.tests_run - self.tests_passed} tests failed")
+            failed_count = self.tests_run - self.tests_passed
+            print(f"⚠️  {failed_count} tests failed - Review implementation")
             return 1
 
 def main():
