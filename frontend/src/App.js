@@ -2159,59 +2159,31 @@ function App() {
     <div className="App">
       <BrowserRouter>
         <Routes>
+          {/* Regular User Authentication */}
           <Route 
             path="/auth" 
             element={user ? <Navigate to="/dashboard" replace /> : <AuthPage />} 
           />
+
+          {/* Admin Login - Separate URL */}
+          <Route 
+            path="/admin-login" 
+            element={user?.role === 'admin' ? <Navigate to="/admin/dashboard" replace /> : <AdminLogin />} 
+          />
           
+          {/* User Dashboards */}
           <Route
             path="/dashboard"
             element={
               <ProtectedRoute>
                 {user?.role === 'customer' && <CustomerDashboard />}
                 {user?.role === 'worker' && <WorkerDashboard />}
-                {user?.role === 'admin' && <AdminDashboard />}
+                {user?.role === 'admin' && <Navigate to="/admin/dashboard" replace />}
               </ProtectedRoute>
             }
           />
 
-          {/* Admin Routes */}
-          <Route
-            path="/admin"
-            element={
-              <ProtectedRoute requiredRole="admin">
-                <AdminDashboard />
-              </ProtectedRoute>
-            }
-          />
-          
-          <Route
-            path="/admin-users"
-            element={
-              <ProtectedRoute requiredRole="admin">
-                <AdminUserManagement />
-              </ProtectedRoute>
-            }
-          />
-          
-          <Route
-            path="/admin-disputes"
-            element={
-              <ProtectedRoute requiredRole="admin">
-                <AdminDisputeManagement />
-              </ProtectedRoute>
-            }
-          />
-          
-          <Route
-            path="/admin-analytics"
-            element={
-              <ProtectedRoute requiredRole="admin">
-                <AdminAnalytics />
-              </ProtectedRoute>
-            }
-          />
-
+          {/* Customer Routes */}
           <Route
             path="/post-job"
             element={
@@ -2239,6 +2211,7 @@ function App() {
             }
           />
 
+          {/* Worker Routes */}
           <Route
             path="/find-jobs"
             element={
@@ -2256,12 +2229,58 @@ function App() {
               </ProtectedRoute>
             }
           />
-          
+
+          {/* Admin Routes - Separate Portal */}
+          <Route
+            path="/admin/dashboard"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminDashboardComponent />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/admin/users"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminUserManagementComponent />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/admin/disputes"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminDisputeManagementComponent />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/admin/analytics"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminAnalyticsComponent />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Default Routes */}
           <Route
             path="/"
             element={
-              user ? <Navigate to="/dashboard" replace /> : <Navigate to="/auth" replace />
+              user ? (
+                user.role === 'admin' ? <Navigate to="/admin/dashboard" replace /> : <Navigate to="/dashboard" replace />
+              ) : <Navigate to="/auth" replace />
             }
+          />
+
+          {/* Admin Access */}
+          <Route
+            path="/admin"
+            element={<Navigate to="/admin-login" replace />}
           />
           
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
