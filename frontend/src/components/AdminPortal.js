@@ -677,6 +677,3 @@ const AdminDashboardSkeleton = () => (
     </div>
   </div>
 );
-
-// Export all admin components
-export { AdminDashboard, AdminUserManagement, AdminDisputeManagement, AdminAnalytics };
