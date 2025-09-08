@@ -1315,6 +1315,406 @@ async def get_config(current_user: User = Depends(get_current_user)):
 # Include the router
 app.include_router(api_router)
 
+# =============================================================================
+# ADMIN ROUTES
+# =============================================================================
+
+# Admin role validation
+def require_admin_role():
+    async def role_checker(current_user: User = Depends(get_current_user)):
+        if current_user.role != UserRole.ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Admin access required"
+            )
+        return current_user
+    return role_checker
+
+@api_router.get("/admin/dashboard")
+async def get_admin_dashboard(current_user: User = Depends(require_admin_role())):
+    """Get comprehensive admin dashboard statistics"""
+    
+    # Get user counts
+    total_users = await db.users.count_documents({})
+    total_customers = await db.users.count_documents({"role": "customer"})
+    total_workers = await db.users.count_documents({"role": "worker"})
+    
+    # Get job counts
+    active_jobs = await db.jobs.count_documents({"status": {"$in": ["open", "assigned", "in_progress"]}})
+    completed_jobs = await db.jobs.count_documents({"status": "completed"})
+    
+    # Get dispute counts (mock data since collection may not exist)
+    pending_disputes = 0
+    pending_kyc = 0
+    
+    # Get revenue data
+    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = today.replace(day=1)
+    
+    # Calculate revenue (from payments collection)
+    revenue_today = 0.0
+    revenue_month = 0.0
+    
+    try:
+        revenue_today_pipeline = [
+            {"$match": {"created_at": {"$gte": today}, "status": {"$in": ["succeeded", "recorded_cod"]}}},
+            {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+        ]
+        
+        revenue_month_pipeline = [
+            {"$match": {"created_at": {"$gte": month_start}, "status": {"$in": ["succeeded", "recorded_cod"]}}},
+            {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+        ]
+        
+        revenue_today_result = await db.payments.aggregate(revenue_today_pipeline).to_list(1)
+        revenue_month_result = await db.payments.aggregate(revenue_month_pipeline).to_list(1)
+        
+        revenue_today = revenue_today_result[0]["total"] if revenue_today_result else 0.0
+        revenue_month = revenue_month_result[0]["total"] if revenue_month_result else 0.0
+    except Exception as e:
+        logger.warning(f"Revenue calculation failed: {e}")
+    
+    # Get top performing workers
+    top_workers = []
+    try:
+        top_workers_pipeline = [
+            {"$match": {"role": "worker"}},
+            {"$sort": {"rating_avg": -1, "reviews_count": -1}},
+            {"$limit": 5},
+            {"$project": {"name": 1, "rating_avg": 1, "reviews_count": 1}}
+        ]
+        
+        top_workers = await db.users.aggregate(top_workers_pipeline).to_list(5)
+    except Exception as e:
+        logger.warning(f"Top workers calculation failed: {e}")
+    
+    # Get recent activities (mock data)
+    recent_activities = [
+        {"type": "job_posted", "description": "New plumbing job posted", "time": "2 hours ago"},
+        {"type": "worker_joined", "description": "New worker registered", "time": "4 hours ago"},
+        {"type": "payment_completed", "description": f"Payment of ₹{revenue_today} completed", "time": "6 hours ago"}
+    ]
+    
+    return {
+        "total_users": total_users,
+        "total_customers": total_customers,
+        "total_workers": total_workers,
+        "active_jobs": active_jobs,
+        "completed_jobs": completed_jobs,
+        "pending_disputes": pending_disputes,
+        "pending_kyc": pending_kyc,
+        "total_revenue_today": revenue_today,
+        "total_revenue_month": revenue_month,
+        "top_performing_workers": top_workers,
+        "recent_activities": recent_activities
+    }
+
+@api_router.get("/admin/users")
+async def get_all_users(
+    role: Optional[str] = None,
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(20, le=100),
+    skip: int = 0,
+    current_user: User = Depends(require_admin_role())
+):
+    """Get all users with filtering and search"""
+    filter_dict = {}
+    
+    if role:
+        filter_dict["role"] = role
+    
+    if search:
+        filter_dict["$or"] = [
+            {"name": {"$regex": search, "$options": "i"}},
+            {"phone": {"$regex": search, "$options": "i"}},
+            {"email": {"$regex": search, "$options": "i"}}
+        ]
+    
+    users = await db.users.find(filter_dict).skip(skip).limit(limit).to_list(limit)
+    return [User(**{k: v for k, v in user.items() if k != 'password_hash'}) for user in users]
+
+@api_router.get("/admin/users/{user_id}/activity")
+async def get_user_activity(
+    user_id: str,
+    current_user: User = Depends(require_admin_role())
+):
+    """Get user activity timeline"""
+    
+    # Get user info
+    user = await db.users.find_one({"id": user_id})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    
+    # Get user's jobs
+    jobs = []
+    if user["role"] == "customer":
+        jobs = await db.jobs.find({"customer_id": user_id}).sort("created_at", -1).limit(10).to_list(10)
+    
+    # Get applications/bids
+    applications = await db.applications.find({"worker_id": user_id}).sort("created_at", -1).limit(10).to_list(10)
+    bids = await db.bids.find({"worker_id": user_id}).sort("created_at", -1).limit(10).to_list(10)
+    
+    # Get payments
+    payments = await db.payments.find({
+        "$or": [{"payer_id": user_id}, {"payee_id": user_id}]
+    }).sort("created_at", -1).limit(10).to_list(10)
+    
+    # Get reviews
+    reviews_given = await db.reviews.find({"reviewer_user_id": user_id}).sort("created_at", -1).limit(5).to_list(5)
+    reviews_received = await db.reviews.find({"reviewee_user_id": user_id}).sort("created_at", -1).limit(5).to_list(5)
+    
+    return {
+        "user": {k: v for k, v in user.items() if k != 'password_hash'},
+        "jobs_posted": len(jobs) if user["role"] == "customer" else 0,
+        "applications_sent": len(applications),
+        "bids_placed": len(bids),
+        "payments_made": len([p for p in payments if p["payer_id"] == user_id]),
+        "payments_received": len([p for p in payments if p["payee_id"] == user_id]),
+        "reviews_given": len(reviews_given),
+        "reviews_received": len(reviews_received),
+        "recent_jobs": jobs[:5],
+        "recent_applications": applications[:5],
+        "recent_reviews": reviews_received[:5]
+    }
+
+@api_router.post("/admin/users/{user_id}/strike")
+async def issue_user_strike(
+    user_id: str,
+    strike_data: dict,
+    current_user: User = Depends(require_admin_role())
+):
+    """Issue a strike/warning to a user"""
+    
+    # Create strike record (simplified)
+    strike = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "reason": strike_data["reason"],
+        "description": strike_data["description"],
+        "severity": strike_data.get("severity", "medium"),
+        "issued_by": current_user.id,
+        "issued_at": datetime.now(timezone.utc),
+        "is_active": True
+    }
+    
+    # Insert strike (create collection if doesn't exist)
+    await db.user_strikes.insert_one(strike)
+    
+    # Count strikes
+    strike_count = await db.user_strikes.count_documents({"user_id": user_id, "is_active": True})
+    
+    return {"message": "Strike issued successfully", "total_strikes": strike_count}
+
+@api_router.get("/admin/kyc/pending")
+async def get_pending_kyc(
+    limit: int = 20,
+    skip: int = 0,
+    current_user: User = Depends(require_admin_role())
+):
+    """Get all pending KYC verifications"""
+    
+    # Return empty list for now (KYC system not fully implemented)
+    return []
+
+@api_router.get("/admin/jobs/moderation")
+async def get_jobs_for_moderation(
+    status: str = "pending",
+    limit: int = 20,
+    skip: int = 0,
+    current_user: User = Depends(require_admin_role())
+):
+    """Get jobs that need content moderation"""
+    
+    # Return empty list for now (moderation system not fully implemented)
+    return []
+
+@api_router.get("/admin/disputes")
+async def get_disputes(
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    assigned_to: Optional[str] = None,
+    limit: int = 20,
+    skip: int = 0,
+    current_user: User = Depends(require_admin_role())
+):
+    """Get disputes with filtering"""
+    
+    # Return empty list for now (dispute system not fully implemented)
+    return []
+
+@api_router.get("/admin/analytics/revenue")
+async def get_revenue_analytics(
+    period: str = "month",
+    current_user: User = Depends(require_admin_role())
+):
+    """Get revenue analytics for different time periods"""
+    
+    now = datetime.now(timezone.utc)
+    
+    if period == "day":
+        start_date = now - timedelta(days=30)
+        group_by = {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}}
+    elif period == "week":
+        start_date = now - timedelta(weeks=12)
+        group_by = {"$dateToString": {"format": "%Y-W%V", "date": "$created_at"}}
+    elif period == "month":
+        start_date = now - timedelta(days=365)
+        group_by = {"$dateToString": {"format": "%Y-%m", "date": "$created_at"}}
+    else:  # year
+        start_date = now - timedelta(days=365*3)
+        group_by = {"$dateToString": {"format": "%Y", "date": "$created_at"}}
+    
+    try:
+        pipeline = [
+            {"$match": {
+                "created_at": {"$gte": start_date},
+                "status": {"$in": ["succeeded", "recorded_cod"]}
+            }},
+            {"$group": {
+                "_id": group_by,
+                "total_revenue": {"$sum": "$amount"},
+                "transaction_count": {"$sum": 1}
+            }},
+            {"$sort": {"_id": 1}}
+        ]
+        
+        results = await db.payments.aggregate(pipeline).to_list(100)
+        
+        return {
+            "period": period,
+            "data": results,
+            "total_revenue": sum(r["total_revenue"] for r in results),
+            "total_transactions": sum(r["transaction_count"] for r in results)
+        }
+    except Exception as e:
+        logger.warning(f"Revenue analytics failed: {e}")
+        return {
+            "period": period,
+            "data": [],
+            "total_revenue": 0,
+            "total_transactions": 0
+        }
+
+@api_router.get("/admin/analytics/jobs")
+async def get_job_analytics(current_user: User = Depends(require_admin_role())):
+    """Get job-related analytics"""
+    
+    # Job completion rates
+    total_jobs = await db.jobs.count_documents({})
+    completed_jobs = await db.jobs.count_documents({"status": "completed"})
+    completion_rate = (completed_jobs / total_jobs * 100) if total_jobs > 0 else 0
+    
+    # Average job values by category
+    try:
+        category_pipeline = [
+            {"$group": {
+                "_id": "$category",
+                "avg_amount": {"$avg": "$budget_amount"},
+                "job_count": {"$sum": 1}
+            }},
+            {"$sort": {"job_count": -1}}
+        ]
+        
+        category_stats = await db.jobs.aggregate(category_pipeline).to_list(100)
+    except Exception as e:
+        logger.warning(f"Category stats failed: {e}")
+        category_stats = []
+    
+    # Jobs by status
+    try:
+        status_pipeline = [
+            {"$group": {
+                "_id": "$status",
+                "count": {"$sum": 1}
+            }}
+        ]
+        
+        status_stats = await db.jobs.aggregate(status_pipeline).to_list(100)
+    except Exception as e:
+        logger.warning(f"Status stats failed: {e}")
+        status_stats = []
+    
+    return {
+        "total_jobs": total_jobs,
+        "completed_jobs": completed_jobs,
+        "completion_rate": round(completion_rate, 2),
+        "category_stats": category_stats,
+        "status_distribution": status_stats
+    }
+
+@api_router.get("/admin/config")
+async def get_platform_config(
+    category: Optional[str] = None,
+    current_user: User = Depends(require_admin_role())
+):
+    """Get platform configuration"""
+    
+    # Return mock configuration data
+    configs = [
+        {"key": "max_job_budget", "value": 100000, "category": "job", "description": "Maximum job budget allowed"},
+        {"key": "commission_rate", "value": 0.05, "category": "payment", "description": "Platform commission rate"},
+        {"key": "auto_assign_timeout", "value": 24, "category": "job", "description": "Hours before auto-assignment"},
+    ]
+    
+    if category:
+        configs = [c for c in configs if c["category"] == category]
+    
+    return configs
+
+@api_router.post("/admin/announcements")
+async def create_announcement(
+    announcement_data: dict,
+    current_user: User = Depends(require_admin_role())
+):
+    """Create platform-wide announcement"""
+    
+    announcement = {
+        "id": str(uuid.uuid4()),
+        "title": announcement_data["title"],
+        "message": announcement_data["message"],
+        "target_audience": announcement_data.get("target_audience", "all"),
+        "target_user_ids": announcement_data.get("target_user_ids", []),
+        "announcement_type": announcement_data.get("type", "info"),
+        "priority": announcement_data.get("priority", "normal"),
+        "start_date": datetime.fromisoformat(announcement_data["start_date"]),
+        "end_date": datetime.fromisoformat(announcement_data["end_date"]) if announcement_data.get("end_date") else None,
+        "created_by": current_user.id,
+        "created_at": datetime.now(timezone.utc)
+    }
+    
+    # Insert announcement
+    await db.announcements.insert_one(announcement)
+    
+    # Get target users
+    target_users = []
+    if announcement["target_audience"] == "all":
+        target_users = await db.users.find({}, {"id": 1}).to_list(1000)
+    elif announcement["target_audience"] in ["customers", "workers"]:
+        target_users = await db.users.find({"role": announcement["target_audience"][:-1]}, {"id": 1}).to_list(1000)
+    elif announcement["target_user_ids"]:
+        target_users = [{"id": uid} for uid in announcement["target_user_ids"]]
+    
+    # Create notifications (batch insert)
+    notifications = []
+    for user in target_users:
+        notification = {
+            "id": str(uuid.uuid4()),
+            "user_id": user["id"],
+            "type": "announcement",
+            "title": announcement["title"],
+            "message": announcement["message"],
+            "data": {"announcement_id": announcement["id"]},
+            "is_read": False,
+            "created_at": datetime.now(timezone.utc)
+        }
+        notifications.append(notification)
+    
+    if notifications:
+        await db.notifications.insert_many(notifications)
+    
+    return {"message": "Announcement created successfully", "notification_count": len(notifications)}
+
 # Include admin routes
 try:
     from admin_routes import admin_router
