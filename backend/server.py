@@ -1465,7 +1465,7 @@ async def get_user_activity(
     reviews_received = await db.reviews.find({"reviewee_user_id": user_id}).sort("created_at", -1).limit(5).to_list(5)
     
     return {
-        "user": {k: v for k, v in user.items() if k != 'password_hash'},
+        "user": {k: v for k, v in user.items() if k not in ['password_hash', '_id']},
         "jobs_posted": len(jobs) if user["role"] == "customer" else 0,
         "applications_sent": len(applications),
         "bids_placed": len(bids),
@@ -1473,9 +1473,9 @@ async def get_user_activity(
         "payments_received": len([p for p in payments if p["payee_id"] == user_id]),
         "reviews_given": len(reviews_given),
         "reviews_received": len(reviews_received),
-        "recent_jobs": jobs[:5],
-        "recent_applications": applications[:5],
-        "recent_reviews": reviews_received[:5]
+        "recent_jobs": [{k: v for k, v in job.items() if k != '_id'} for job in jobs[:5]],
+        "recent_applications": [{k: v for k, v in app.items() if k != '_id'} for app in applications[:5]],
+        "recent_reviews": [{k: v for k, v in review.items() if k != '_id'} for review in reviews_received[:5]]
     }
 
 @api_router.post("/admin/users/{user_id}/strike")
