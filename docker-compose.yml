@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   # MongoDB Database
@@ -17,30 +17,39 @@ services:
       - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
     networks:
       - shidhaan-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-  # Shidhaan Application
+  # Shidhaan Application (Backend + Frontend)
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Build-time argument for React app
+        REACT_APP_BACKEND_URL: http://localhost:8000
     container_name: shidhaan-app
     restart: unless-stopped
     ports:
       - "8000:8000"
     environment:
+      # Backend environment variables
       - MONGO_URL=mongodb://admin:password123@mongodb:27017
       - DB_NAME=shidhaan_marketplace
       - JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
-      - RAZORPAY_KEY_ID=rzp_test_your_key_id_here
-      - RAZORPAY_KEY_SECRET=your_razorpay_secret_here
-      - REACT_APP_BACKEND_URL=http://localhost:8000
+      - RAZORPAY_KEY_ID=rzp_test_placeholder
+      - RAZORPAY_KEY_SECRET=test_secret_placeholder
+      - CORS_ORIGINS=http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
     networks:
       - shidhaan-network
-    volumes:
-      - ./backend:/app/backend
-      - ./frontend:/app/frontend
 
-  # MongoDB Express (Database Admin UI)
+  # MongoDB Express (Database Admin UI - Optional)
   mongo-express:
     image: mongo-express:1.0.0
     container_name: shidhaan-mongo-express
@@ -54,12 +63,14 @@ services:
       ME_CONFIG_BASICAUTH_USERNAME: admin
       ME_CONFIG_BASICAUTH_PASSWORD: admin123
     depends_on:
-      - mongodb
+      mongodb:
+        condition: service_healthy
     networks:
       - shidhaan-network
 
 volumes:
   mongodb_data:
+    driver: local
 
 networks:
   shidhaan-network:

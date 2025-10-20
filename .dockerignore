@@ -1,23 +1,12 @@
 # Git
 .git
 .gitignore
+.gitattributes
 
 # Documentation
 README.md
 DEPLOYMENT.md
 *.md
-
-# Environment files
-.env
-.env.local
-.env.development
-.env.test
-.env.production
-
-# Node modules
-frontend/node_modules
-frontend/.npm
-frontend/.yarn
 
 # Python
 __pycache__
@@ -25,21 +14,40 @@ __pycache__
 *.pyo
 *.pyd
 .Python
-env
-pip-log.txt
-pip-delete-this-directory.txt
-.tox
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.log
-.git
-.mypy_cache
+*.so
+*.egg
+*.egg-info
+dist
+build
 .pytest_cache
-.hypothesis
+.coverage
+htmlcov
+venv
+env
+ENV
+
+# Node
+node_modules
+npm-debug.log
+yarn-error.log
+yarn-debug.log
+.npm
+.yarn
+
+# Frontend build (we build it in Docker)
+frontend/build
+frontend/.env.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/.env.production.local
+
+# Backend
+backend/.env
+backend/__pycache__
+backend/*.pyc
+backend/.python-version
+backend/uv.lock
+backend/pyproject.toml
 
 # IDE
 .vscode
@@ -47,30 +55,21 @@ coverage.xml
 *.swp
 *.swo
 *~
-
-# OS
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Build artifacts
-frontend/build
-frontend/dist
-*.tar.gz
 
 # Test files
-tests/
-*_test.py
-test_*.py
+tests
+backend_test.py
+admin_test.py
+test_result.md
 
 # Docker
-Dockerfile
 docker-compose.yml
-.dockerignore
+docker-compose.*.yml
+Dockerfile.dev
 
-# Fly.io
-fly.toml
+# Misc
+*.log
+.env
+.env.local
+.env.*.local
