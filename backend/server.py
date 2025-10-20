@@ -54,6 +54,162 @@ security = HTTPBearer()
 app = FastAPI(title="Shidhaan API", version="1.0.0")
 api_router = APIRouter(prefix="/api")
 
+# =============================================================================
+# STARTUP EVENT - AUTO SEED DEMO DATA
+# =============================================================================
+
+
+async def seed_demo_data():
+    """Auto-seed demo users and data on startup if database is empty"""
+    try:
+        # Check if any users exist
+        user_count = await db.users.count_documents({})
+
+        if user_count == 0:
+            logger.info("🌱 Database is empty. Seeding demo data...")
+
+            # Demo users data
+            demo_users = [
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Rajesh Kumar",
+                    "phone": "9876543210",
+                    "email": "customer@demo.com",
+                    "role": "customer",
+                    "languages": ["en", "hi"],
+                    "location": {
+                        "lat": 28.6139,
+                        "lng": 77.2090,
+                        "address": "Connaught Place, New Delhi, India",
+                    },
+                    "rating_avg": 4.5,
+                    "reviews_count": 12,
+                    "created_at": datetime.now(timezone.utc),
+                    "password_hash": pwd_context.hash("password123"),
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Priya Sharma",
+                    "phone": "9876543211",
+                    "email": "worker@demo.com",
+                    "role": "worker",
+                    "languages": ["en", "hi"],
+                    "location": {
+                        "lat": 28.5355,
+                        "lng": 77.3910,
+                        "address": "Noida, Uttar Pradesh, India",
+                    },
+                    "rating_avg": 4.7,
+                    "reviews_count": 25,
+                    "created_at": datetime.now(timezone.utc),
+                    "password_hash": pwd_context.hash("password123"),
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "name": "Admin User",
+                    "phone": "9876543212",
+                    "email": "admin@shidhaan.com",
+                    "role": "admin",
+                    "languages": ["en", "hi"],
+                    "rating_avg": 5.0,
+                    "reviews_count": 0,
+                    "created_at": datetime.now(timezone.utc),
+                    "password_hash": pwd_context.hash("admin123"),
+                },
+            ]
+
+            # Insert demo users
+            for user in demo_users:
+                await db.users.insert_one(user)
+                logger.info(
+                    f"✅ Created {user['role']}: {user['name']} ({user['phone']})"
+                )
+
+                # Create worker profile for worker user
+                if user["role"] == "worker":
+                    worker_profile = {
+                        "id": str(uuid.uuid4()),
+                        "user_id": user["id"],
+                        "skills": ["Plumbing", "Electrical Work", "Carpentry"],
+                        "experience_years": 5,
+                        "certifications": ["ITI Certificate", "Safety Training"],
+                        "preferred_locations": [user["location"]],
+                        "completed_jobs": 18,
+                        "cancelled_jobs": 1,
+                        "trust_score": 85.5,
+                        "service_radius_km": 10,
+                    }
+                    await db.worker_profiles.insert_one(worker_profile)
+                    logger.info(f"✅ Created worker profile for {user['name']}")
+
+            # Create demo jobs
+            demo_jobs = [
+                {
+                    "id": str(uuid.uuid4()),
+                    "customer_id": demo_users[0]["id"],
+                    "type": "daily",
+                    "category": "skilled",
+                    "title": "Bathroom Plumbing Repair",
+                    "description": "Need experienced plumber to fix leaking pipes in bathroom. Urgent work required.",
+                    "photos": [],
+                    "location": {
+                        "lat": 28.6139,
+                        "lng": 77.2090,
+                        "address": "Connaught Place, New Delhi, India",
+                    },
+                    "preferred_time_window": {"start": "09:00", "end": "17:00"},
+                    "budget_amount": 2500.0,
+                    "is_budget_negotiable": False,
+                    "status": "open",
+                    "created_at": datetime.now(timezone.utc),
+                    "applications_count": 0,
+                    "bids_count": 0,
+                },
+                {
+                    "id": str(uuid.uuid4()),
+                    "customer_id": demo_users[0]["id"],
+                    "type": "contractual",
+                    "category": "skilled",
+                    "title": "Kitchen Renovation Work",
+                    "description": "Looking for skilled workers for complete kitchen renovation. Need carpentry and electrical work.",
+                    "photos": [],
+                    "location": {
+                        "lat": 28.6139,
+                        "lng": 77.2090,
+                        "address": "Connaught Place, New Delhi, India",
+                    },
+                    "preferred_time_window": {"start": "08:00", "end": "18:00"},
+                    "budget_amount": 50000.0,
+                    "is_budget_negotiable": True,
+                    "status": "open",
+                    "created_at": datetime.now(timezone.utc),
+                    "applications_count": 0,
+                    "bids_count": 0,
+                },
+            ]
+
+            for job in demo_jobs:
+                await db.jobs.insert_one(job)
+                logger.info(f"✅ Created job: {job['title']} ({job['type']})")
+
+            logger.info("🎉 Demo data seeded successfully!")
+            logger.info("\n📋 Demo Login Credentials:")
+            logger.info("   Customer: 9876543210 / password123")
+            logger.info("   Worker: 9876543211 / password123")
+            logger.info("   Admin: 9876543212 / admin123")
+        else:
+            logger.info(f"✓ Database already has {user_count} users. Skipping seed.")
+    except Exception as e:
+        logger.error(f"❌ Error seeding demo data: {e}")
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Run on application startup"""
+    logger.info("🚀 Starting Shidhaan API...")
+    await seed_demo_data()
+
+
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
