@@ -68,7 +68,7 @@ export const AdminLogin = () => {
             <Shield className="w-10 h-10 text-white" />
           </div>
           <h1 className="text-3xl font-bold text-white mb-2">Admin Portal</h1>
-          <p className="text-slate-400">Shidhaan Marketplace Administration</p>
+          <p className="text-slate-400">Sanyuth Marketplace Administration</p>
           <div className="w-16 h-1 bg-gradient-to-r from-orange-500 to-red-600 rounded-full mx-auto mt-4"></div>
         </div>
 

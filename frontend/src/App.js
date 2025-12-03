@@ -154,8 +154,8 @@ const Header = ({ onMenuClick }) => {
               <Menu className="w-6 h-6" />
             </button>
             <div className="flex-shrink-0 ml-2 lg:ml-0">
-              <h1 className="text-2xl font-bold text-orange-600">Shidhaan</h1>
-              <p className="text-xs text-gray-500">Blue Collar Marketplace</p>
+              <h1 className="text-2xl font-bold text-orange-600">Sanyuth</h1>
+              <p className="text-xs text-gray-500">AI Powered - Blue Collar Marketplace</p>
             </div>
           </div>
 
@@ -1740,8 +1740,8 @@ const AuthPage = () => {
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-amber-50 flex items-center justify-center p-4">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-orange-600 mb-2">Shidhaan</h1>
-          <p className="text-gray-600">Blue Collar Marketplace</p>
+          <h1 className="text-4xl font-bold text-orange-600 mb-2">Sanyuth</h1>
+          <p className="text-gray-600">AI Powered - Blue Collar Marketplace</p>
         </div>
 
         <div className="bg-white rounded-xl shadow-lg p-8">
@@ -2148,7 +2148,7 @@ function App() {
       <div className="flex items-center justify-center h-screen bg-gradient-to-br from-orange-50 to-amber-50">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600 mx-auto mb-4"></div>
-          <h2 className="text-xl font-semibold text-orange-600">Shidhaan</h2>
+          <h2 className="text-xl font-semibold text-orange-600">Sanyuth</h2>
           <p className="text-gray-600">Loading...</p>
         </div>
       </div>
