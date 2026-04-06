@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { AdminLogin } from './components/AdminLogin';
 import { 
@@ -1107,6 +1107,50 @@ const PostJobForm = () => {
     photos: []
   });
   const [loading, setLoading] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const handleImageUpload = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+
+    setUploadingImage(true);
+    const newPhotos = [...jobData.photos];
+
+    try {
+      for (const file of files) {
+        if (file.size > 10 * 1024 * 1024) {
+          toast.error(`${file.name} is larger than 10MB`);
+          continue;
+        }
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const response = await axios.post(`${API}/upload`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        });
+        
+        newPhotos.push(response.data.url);
+      }
+      handleInputChange('photos', newPhotos);
+      if (newPhotos.length > jobData.photos.length) {
+        toast.success('Images uploaded successfully');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to upload images');
+    } finally {
+      setUploadingImage(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const removePhoto = (index) => {
+    const newPhotos = [...jobData.photos];
+    newPhotos.splice(index, 1);
+    handleInputChange('photos', newPhotos);
+  };
 
   const categories = [
     { value: 'skilled', label: 'Skilled Work', icon: Wrench, desc: 'Plumbing, electrical, carpentry' },
@@ -1303,11 +1347,39 @@ const PostJobForm = () => {
         <label className="block text-sm font-medium text-gray-700 mb-2">
           Add Photos (Optional)
         </label>
-        <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
-          <Camera className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <p className="text-gray-600">Click to upload photos of the work area</p>
-          <p className="text-sm text-gray-500 mt-1">PNG, JPG up to 10MB</p>
+        <div 
+          onClick={() => !uploadingImage && fileInputRef.current?.click()}
+          className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${uploadingImage ? 'border-gray-400 bg-gray-50' : 'border-gray-300 hover:border-orange-500'}`}
+        >
+          <Camera className={`w-12 h-12 mx-auto mb-4 ${uploadingImage ? 'text-gray-400 animate-pulse' : 'text-gray-400'}`} />
+          <p className="text-gray-600">{uploadingImage ? 'Uploading...' : 'Click to upload photos of the work area'}</p>
+          <p className="text-sm text-gray-500 mt-1">PNG, JPG, WEBP up to 10MB</p>
+          <input 
+            type="file" 
+            multiple 
+            accept="image/*" 
+            className="hidden" 
+            ref={fileInputRef}
+            onChange={handleImageUpload}
+            disabled={uploadingImage}
+          />
         </div>
+        {jobData.photos.length > 0 && (
+          <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+            {jobData.photos.map((url, idx) => (
+              <div key={idx} className="relative group rounded-lg overflow-hidden border border-gray-200">
+                <img src={`${BACKEND_URL}${url}`} alt={`Preview ${idx + 1}`} className="w-full h-24 object-cover" />
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); removePhoto(idx); }}
+                  className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 shadow-sm"
+                >
+                  <XCircle className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

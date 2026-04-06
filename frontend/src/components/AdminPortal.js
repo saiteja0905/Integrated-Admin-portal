@@ -115,12 +115,21 @@ export const AdminDashboard = () => {
         {/* Revenue Chart */}
         <div className="lg:col-span-2 bg-white rounded-lg shadow-sm border p-6">
           <h3 className="text-lg font-semibold mb-4">Revenue Overview</h3>
-          <div className="h-64 flex items-center justify-center text-gray-500">
-            <BarChart3 className="w-16 h-16 text-gray-300 mb-4" />
-            <div className="text-center">
-              <p>Revenue analytics chart</p>
-              <p className="text-sm">Integration with chart library needed</p>
-            </div>
+          <div className="flex h-64 items-end pb-8 gap-4 px-4 overflow-x-auto border-b border-l">
+            {/* CSS Bar Chart Simulation */}
+            {[45, 60, 30, 80, 50, 95, 75].map((val, idx) => (
+              <div key={idx} className="flex flex-col items-center flex-1 group">
+                <div 
+                  className="w-full bg-orange-500 hover:bg-orange-600 rounded-t-sm transition-all duration-300 relative"
+                  style={{ height: `${val}%` }}
+                >
+                  <span className="absolute -top-6 left-1/2 -translate-x-1/2 text-xs font-bold text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                    ₹{val * 1000}
+                  </span>
+                </div>
+                <span className="text-xs text-gray-500 mt-2">Day {idx + 1}</span>
+              </div>
+            ))}
           </div>
         </div>
 
@@ -215,6 +224,8 @@ export const AdminUserManagement = () => {
     status: ''
   });
   const [selectedUser, setSelectedUser] = useState(null);
+  const [showStrikeModal, setShowStrikeModal] = useState(false);
+  const [strikeDesc, setStrikeDesc] = useState('');
 
   useEffect(() => {
     fetchUsers();
@@ -387,13 +398,15 @@ export const AdminUserManagement = () => {
                       <button
                         onClick={() => setSelectedUser(user)}
                         className="text-blue-600 hover:text-blue-700"
+                        title="View Details"
                       >
                         <Eye className="w-4 h-4" />
                       </button>
-                      <button className="text-yellow-600 hover:text-yellow-700">
-                        <Flag className="w-4 h-4" />
-                      </button>
-                      <button className="text-red-600 hover:text-red-700">
+                      <button 
+                        onClick={() => { setSelectedUser(user); setShowStrikeModal(true); }}
+                        className="text-red-600 hover:text-red-700"
+                        title="Issue Strike"
+                      >
                         <AlertTriangle className="w-4 h-4" />
                       </button>
                     </div>
@@ -404,6 +417,35 @@ export const AdminUserManagement = () => {
           </table>
         </div>
       </div>
+
+      {showStrikeModal && selectedUser && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full">
+            <h3 className="text-xl font-bold mb-4">Issue Strike to {selectedUser.name}</h3>
+            <p className="text-sm text-gray-600 mb-4">A user is automatically suspended upon reaching 3 strikes.</p>
+            <textarea
+              className="w-full p-2 border rounded-lg mb-4"
+              rows="3"
+              placeholder="Reason for strike..."
+              value={strikeDesc}
+              onChange={(e) => setStrikeDesc(e.target.value)}
+            ></textarea>
+            <div className="flex justify-end space-x-2">
+              <button onClick={() => setShowStrikeModal(false)} className="px-4 py-2 border rounded-lg">Cancel</button>
+              <button 
+                onClick={() => {
+                  handleUserAction(selectedUser.id, 'strike', { reason: 'policy_violation', description: strikeDesc });
+                  setShowStrikeModal(false);
+                  setStrikeDesc('');
+                }} 
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+              >
+                Confirm Strike
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Request, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Request, Query, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -21,6 +21,10 @@ from pathlib import Path
 # Load environment variables
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
+
+# Create uploads directory
+UPLOAD_DIR = ROOT_DIR / "uploads"
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # MongoDB connection
 mongo_url = os.environ["MONGO_URL"]
@@ -218,6 +222,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serve static uploads
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 # Logging
 logging.basicConfig(level=logging.INFO)
@@ -601,6 +608,13 @@ async def get_current_user(
     user_doc = await db.users.find_one({"id": user_id})
     if user_doc is None:
         raise credentials_exception
+        
+    if user_doc.get("status") == "suspended":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been suspended by an administrator."
+        )
+        
     return User(**user_doc)
 
 
@@ -731,6 +745,33 @@ async def update_worker_profile(
 # =============================================================================
 # JOB ROUTES WITH ADVANCED SEARCH
 # =============================================================================
+
+@api_router.post("/upload")
+async def upload_file(
+    file: UploadFile = File(...), current_user: User = Depends(get_current_user)
+):
+    """Upload a file securely and return its URL"""
+    file_ext = os.path.splitext(file.filename)[1].lower()
+    
+    # Validate extension
+    allowed_exts = {".jpg", ".jpeg", ".png", ".webp"}
+    if file_ext not in allowed_exts:
+        raise HTTPException(status_code=400, detail="Only JPG, PNG, and WEBP files are allowed.")
+        
+    safe_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = UPLOAD_DIR / safe_filename
+
+    # Read and save file
+    content = await file.read()
+    
+    # Restrict to ~10MB
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large. Max 10MB allowed.")
+        
+    with open(file_path, "wb") as f:
+        f.write(content)
+
+    return {"url": f"/uploads/{safe_filename}", "filename": safe_filename}
 
 
 @api_router.post("/jobs", response_model=Job)
