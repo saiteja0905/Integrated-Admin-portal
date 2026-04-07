@@ -9,6 +9,7 @@ import {
 } from './components/AdminPortal';
 import axios from 'axios';
 import { Toaster } from './components/ui/sonner';
+import { MessagingHub } from './components/MessagingHub';
 import { toast } from 'sonner';
 
 // Import Admin Portal Components
@@ -2036,7 +2037,10 @@ const CustomerDashboard = () => {
             <Briefcase className="w-4 h-4 mr-2" />
             Manage Jobs
           </button>
-          <button className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors">
+          <button 
+            onClick={() => navigate('/messages')}
+            className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
+          >
             <MessageCircle className="w-4 h-4 mr-2" />
             View Messages
           </button>
@@ -2335,6 +2339,16 @@ function App() {
             element={
               <ProtectedRoute requiredRole="admin">
                 <AdminAnalyticsComponent />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Messaging Routes */}
+          <Route
+            path="/messages"
+            element={
+              <ProtectedRoute>
+                <MessagingHub user={user} />
               </ProtectedRoute>
             }
           />
