@@ -1038,7 +1038,20 @@ async def get_job_applications(
         raise HTTPException(status_code=403, detail="Access denied")
 
     applications = await db.applications.find({"job_id": job_id}).to_list(length=None)
-    return [Application(**app) for app in applications]
+    
+    # Enrich with worker info
+    enriched_apps = []
+    for app in applications:
+        worker = await db.users.find_one({"id": app["worker_id"]})
+        if worker:
+            app["worker_info"] = {
+                "name": worker["name"],
+                "rating_avg": worker.get("rating_avg", 0.0),
+                "reviews_count": worker.get("reviews_count", 0)
+            }
+        enriched_apps.append(app)
+        
+    return enriched_apps
 
 
 # =============================================================================
@@ -1115,7 +1128,124 @@ async def get_job_bids(job_id: str, current_user: User = Depends(get_current_use
         raise HTTPException(status_code=403, detail="Access denied")
 
     bids = await db.bids.find({"job_id": job_id}).to_list(length=None)
-    return [Bid(**bid) for bid in bids]
+    
+    # Enrich with worker info
+    enriched_bids = []
+    for bid in bids:
+        worker = await db.users.find_one({"id": bid["worker_id"]})
+        if worker:
+            bid["worker_info"] = {
+                "name": worker["name"],
+                "rating_avg": worker.get("rating_avg", 0.0),
+                "reviews_count": worker.get("reviews_count", 0)
+            }
+        enriched_bids.append(bid)
+        
+    return enriched_bids
+
+
+# =============================================================================
+# WORKER DASHBOARD ROUTES
+# =============================================================================
+
+
+@api_router.get("/worker/dashboard-data")
+async def get_worker_dashboard_data(current_user: User = Depends(get_current_user)):
+    if current_user.role != UserRole.WORKER:
+        raise HTTPException(status_code=403, detail="Only workers can access this data")
+
+    # Get all applications by this worker
+    applications = (
+        await db.applications.find({"worker_id": current_user.id})
+        .sort("created_at", -1)
+        .to_list(length=None)
+    )
+
+    # Get all bids by this worker
+    bids = (
+        await db.bids.find({"worker_id": current_user.id})
+        .sort("created_at", -1)
+        .to_list(length=None)
+    )
+
+    # Prepare list of applied jobs with details
+    applied_jobs = []
+    applied_job_ids = set()
+
+    for app in applications:
+        job = await db.jobs.find_one({"id": app["job_id"]})
+        if job:
+            applied_jobs.append(
+                {
+                    "id": job["id"],
+                    "title": job["title"],
+                    "status": job["status"],
+                    "application_status": app["status"],
+                    "type": job["type"],
+                    "budget_amount": job["budget_amount"],
+                    "applied_at": app["created_at"],
+                }
+            )
+            applied_job_ids.add(job["id"])
+
+    for bid in bids:
+        if bid["job_id"] not in applied_job_ids:
+            job = await db.jobs.find_one({"id": bid["job_id"]})
+            if job:
+                applied_jobs.append(
+                    {
+                        "id": job["id"],
+                        "title": job["title"],
+                        "status": job["status"],
+                        "application_status": bid["status"],
+                        "type": job["type"],
+                        "budget_amount": job["budget_amount"],
+                        "applied_at": bid["created_at"],
+                    }
+                )
+
+    # Sort applied jobs by date
+    applied_jobs.sort(key=lambda x: x["applied_at"], reverse=True)
+
+    # Calculate stats
+    # 1. Available jobs (total open jobs in system)
+    available_jobs_count = await db.jobs.count_documents({"status": JobStatus.OPEN})
+
+    # 2. Applied jobs count (total unique jobs worker applied to)
+    applied_count = len(applied_jobs)
+
+    # 3. Active/Won jobs count (jobs where application/bid is accepted)
+    active_count = len([j for j in applied_jobs if j["application_status"] == ApplicationStatus.ACCEPTED])
+
+    # 4. Profile completion (simple check for now)
+    profile = await db.worker_profiles.find_one({"user_id": current_user.id})
+    profile_completion = 40 if not profile else 100 # Simplistic for demo
+
+    # 5. Get recent reviews for the worker
+    recent_reviews = await db.reviews.find({"reviewee_user_id": current_user.id}).sort("created_at", -1).limit(5).to_list(length=None)
+    for review in recent_reviews:
+        reviewer = await db.users.find_one({"id": review["reviewer_user_id"]})
+        review["reviewer_name"] = reviewer["name"] if reviewer else "Customer"
+
+    return {
+        "stats": {
+            "availableJobs": available_jobs_count,
+            "appliedJobs": applied_count,
+            "activeJobs": active_count,
+            "profileCompletion": profile_completion,
+            "ratingAvg": current_user.rating_avg,
+            "reviewsCount": current_user.reviews_count,
+        },
+        "recentApplications": applied_jobs[:5],
+        "recentReviews": [
+            {
+                "stars": r["stars"],
+                "comment": r["comment"],
+                "reviewer_name": r["reviewer_name"],
+                "created_at": r["created_at"]
+            } for r in recent_reviews
+        ]
+    }
 
 
 # =============================================================================

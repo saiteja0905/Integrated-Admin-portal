@@ -1,0 +1,8 @@
+- [ ] Display images in `JobDetails` view
+    - [ ] Add photo gallery section
+    - [ ] Handle empty states and broken image fallbacks
+- [ ] Add thumbnails to `FindJobs` (Worker View)
+    - [ ] Show first photo in `JobCard`
+- [ ] Add thumbnails to `MyJobs` (Customer View)
+    - [ ] Show small preview in job list
+- [ ] Verify image URLs with `BACKEND_URL`
