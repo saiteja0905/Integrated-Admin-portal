@@ -61,7 +61,7 @@ export const PaymentModal = ({ isOpen, onClose, job, assignment, onSuccess }) =>
           amount: response.data.amount,
           currency: 'INR',
           order_id: razorpay_order_id,
-          name: 'Shidhaan',
+          name: 'Shidhaan',   
           description: `Payment for ${job.title}`,
           handler: async (razorpayResponse) => {
             try {

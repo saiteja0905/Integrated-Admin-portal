@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { AdminLogin } from './components/AdminLogin';
 import { 
@@ -9,6 +9,7 @@ import {
 } from './components/AdminPortal';
 import axios from 'axios';
 import { Toaster } from './components/ui/sonner';
+import { MessagingHub } from './components/MessagingHub';
 import { toast } from 'sonner';
 
 // Import Admin Portal Components
@@ -69,7 +70,8 @@ import {
   CheckCircle2,
   XCircle,
   Timer,
-  BadgeCheck
+  BadgeCheck,
+  Loader2
 } from 'lucide-react';
 
 import './App.css';
@@ -154,8 +156,8 @@ const Header = ({ onMenuClick }) => {
               <Menu className="w-6 h-6" />
             </button>
             <div className="flex-shrink-0 ml-2 lg:ml-0">
-              <h1 className="text-2xl font-bold text-orange-600">Shidhaan</h1>
-              <p className="text-xs text-gray-500">Blue Collar Marketplace</p>
+              <h1 className="text-2xl font-bold text-orange-600">Sanyuth</h1>
+              <p className="text-xs text-gray-500">AI Powered - Blue Collar Marketplace</p>
             </div>
           </div>
 
@@ -614,6 +616,107 @@ const BiddingModal = ({ job, isOpen, onClose, onSuccess }) => {
   );
 };
 
+// Utility Component for Star Rating Display
+const StarRating = ({ rating, count, size = "sm", interactive = false, onRate = null }) => {
+  const [hovered, setHovered] = useState(0);
+  
+  return (
+    <div className="flex items-center">
+      <div className="flex items-center">
+        {[1, 2, 3, 4, 5].map((star) => (
+          <Star
+            key={star}
+            onClick={() => interactive && onRate && onRate(star)}
+            onMouseEnter={() => interactive && setHovered(star)}
+            onMouseLeave={() => interactive && setHovered(0)}
+            className={`${size === 'sm' ? 'w-4 h-4' : 'w-5 h-5'} ${
+              star <= (hovered || rating) 
+                ? 'text-yellow-400 fill-current' 
+                : 'text-gray-300'
+            } ${interactive ? 'cursor-pointer hover:scale-110 transition-transform' : ''}`}
+          />
+        ))}
+      </div>
+      {count !== undefined && (
+        <span className="ml-2 text-sm text-gray-500">({count})</span>
+      )}
+    </div>
+  );
+};
+
+// Review Modal Component
+const ReviewModal = ({ isOpen, onClose, onSubmit, workerName }) => {
+  const [stars, setStars] = useState(0);
+  const [comment, setComment] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async () => {
+    if (stars === 0) {
+      toast.error('Please select a star rating');
+      return;
+    }
+    setSubmitting(true);
+    await onSubmit({ stars, comment });
+    setSubmitting(false);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+        <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+          <h2 className="text-xl font-bold text-gray-900">Rate {workerName}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <XCircle className="w-6 h-6" />
+          </button>
+        </div>
+        <div className="p-6 space-y-6">
+          <div className="text-center">
+            <p className="text-gray-600 mb-4">How was your experience with this worker?</p>
+            <div className="flex justify-center">
+              <StarRating 
+                rating={stars} 
+                size="lg" 
+                interactive={true} 
+                onRate={setStars} 
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Share more details (Optional)
+            </label>
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="What did you like? Anything that could be improved?"
+              rows={4}
+              className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-transparent resize-none"
+            />
+          </div>
+        </div>
+        <div className="p-6 bg-gray-50 flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-3 border border-gray-200 text-gray-700 rounded-xl hover:bg-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="flex-1 px-4 py-3 bg-orange-600 text-white rounded-xl hover:bg-orange-700 transition-colors disabled:opacity-50"
+          >
+            {submitting ? 'Submitting...' : 'Submit Review'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Job Details & Application Management
 const JobDetails = () => {
   const { jobId } = useParams();
@@ -624,37 +727,30 @@ const JobDetails = () => {
   const [bids, setBids] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selectedTab, setSelectedTab] = useState('details');
+  const [showReviewModal, setShowReviewModal] = useState(false);
 
   useEffect(() => {
     if (jobId) {
       fetchJobDetails();
-      if (user?.role === 'customer') {
-        fetchApplicationsAndBids();
-      }
     }
   }, [jobId]);
 
   const fetchJobDetails = async () => {
     try {
-      const response = await axios.get(`${API}/jobs/${jobId}`);
-      setJob(response.data);
-    } catch (error) {
-      toast.error('Failed to fetch job details');
-      navigate('/dashboard');
-    }
-  };
-
-  const fetchApplicationsAndBids = async () => {
-    try {
-      if (job?.type === 'daily') {
-        const response = await axios.get(`${API}/jobs/${jobId}/applications`);
-        setApplications(response.data);
+      setLoading(true);
+      const jobRes = await axios.get(`${API}/jobs/${jobId}`);
+      setJob(jobRes.data);
+      
+      if (jobRes.data.type === 'daily') {
+        const appRes = await axios.get(`${API}/jobs/${jobId}/applications`);
+        setApplications(appRes.data);
       } else {
-        const response = await axios.get(`${API}/jobs/${jobId}/bids`);
-        setBids(response.data);
+        const bidRes = await axios.get(`${API}/jobs/${jobId}/bids`);
+        setBids(bidRes.data);
       }
     } catch (error) {
-      console.error('Failed to fetch applications/bids:', error);
+      console.error(error);
+      toast.error('Failed to load job details');
     } finally {
       setLoading(false);
     }
@@ -667,98 +763,119 @@ const JobDetails = () => {
       });
       toast.success('Worker assigned successfully!');
       fetchJobDetails();
-      fetchApplicationsAndBids();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to assign worker');
+      toast.error(error.response?.data?.detail || 'Assignment failed');
     }
   };
 
-  if (loading || !job) {
-    return <div className="p-6"><div className="animate-pulse">Loading job details...</div></div>;
-  }
+  const handleSubmitReview = async (reviewData) => {
+    try {
+      let workerId = '';
+      if (job.type === 'daily') {
+        const acceptedApp = applications.find(a => a.status === 'accepted');
+        workerId = acceptedApp?.worker_id;
+      } else {
+        const acceptedBid = bids.find(b => b.status === 'accepted');
+        workerId = acceptedBid?.worker_id;
+      }
+
+      await axios.post(`${API}/jobs/${jobId}/review`, {
+        stars: reviewData.stars,
+        comment: reviewData.comment,
+        job_id: jobId,
+        reviewee_user_id: workerId
+      });
+      toast.success('Review submitted! Thank you for your feedback.');
+      fetchJobDetails();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to submit review');
+    }
+  };
+
+  if (loading) return (
+    <div className="p-8 flex justify-center">
+      <Loader2 className="w-12 h-12 text-orange-500 animate-spin" />
+    </div>
+  );
+
+  if (!job) return (
+    <div className="p-8 text-center text-gray-500">
+      <p>Job not found</p>
+      <button onClick={() => navigate('/my-jobs')} className="mt-4 text-orange-600">Go Back</button>
+    </div>
+  );
+
+  const isCustomer = user?.role === 'customer' && user?.id === job.customer_id;
+  const isAssignedWorker = user?.role === 'worker' && (
+    applications.some(a => a.worker_id === user.id && a.status === 'accepted') ||
+    bids.some(b => b.worker_id === user.id && b.status === 'accepted')
+  );
 
   return (
-    <div className="p-6">
-      <div className="max-w-6xl mx-auto">
-        {/* Header */}
-        <div className="bg-white rounded-lg shadow-sm border p-6 mb-6">
-          <button
-            onClick={() => navigate('/my-jobs')}
-            className="flex items-center text-gray-600 hover:text-gray-900 mb-4"
-          >
-            <ArrowLeft className="w-5 h-5 mr-2" />
-            Back to My Jobs
-          </button>
-
-          <div className="flex justify-between items-start">
+    <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
+      <div className="max-w-4xl mx-auto">
+        {/* Header Section */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden mb-6">
+          <div className="p-6 sm:p-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
             <div className="flex-1">
-              <div className="flex items-center gap-3 mb-2">
-                <h1 className="text-2xl font-bold text-gray-900">{job.title}</h1>
-                <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${
-                  job.type === 'daily' 
-                    ? 'bg-blue-100 text-blue-800' 
-                    : 'bg-purple-100 text-purple-800'
+              <div className="flex flex-wrap items-center gap-3 mb-3">
+                <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${
+                  job.type === 'daily' ? 'bg-indigo-50 text-indigo-700' : 'bg-fuchsia-50 text-fuchsia-700'
                 }`}>
-                  {job.type === 'daily' ? (
-                    <>
-                      <Zap className="w-3 h-3 mr-1" />
-                      Daily Job
-                    </>
-                  ) : (
-                    <>
-                      <Target className="w-3 h-3 mr-1" />
-                      Contractual
-                    </>
-                  )}
+                  {job.type === 'daily' ? <Zap className="w-3.5 h-3.5 mr-1" /> : <Target className="w-3.5 h-3.5 mr-1" />}
+                  {job.type === 'daily' ? 'Daily Wage' : 'Contractual'}
                 </span>
-                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                  job.status === 'open' ? 'bg-green-100 text-green-800' :
-                  job.status === 'assigned' ? 'bg-blue-100 text-blue-800' :
-                  job.status === 'completed' ? 'bg-gray-100 text-gray-800' :
-                  'bg-yellow-100 text-yellow-800'
+                <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ${
+                  job.status === 'open' ? 'bg-emerald-50 text-emerald-700' :
+                  job.status === 'assigned' ? 'bg-blue-50 text-blue-700' :
+                  job.status === 'completed' ? 'bg-gray-100 text-gray-700' :
+                  'bg-amber-50 text-amber-700'
                 }`}>
-                  {job.status}
+                  {job.status.charAt(0).toUpperCase() + job.status.slice(1)}
                 </span>
               </div>
-              <div className="flex items-center gap-6 text-sm text-gray-600">
-                <div className="flex items-center">
-                  <MapPin className="w-4 h-4 mr-1" />
-                  {job.location?.address}
-                </div>
-                <div className="flex items-center">
-                  <Clock className="w-4 h-4 mr-1" />
-                  {job.preferred_time_window?.start} - {job.preferred_time_window?.end}
-                </div>
-                <div className="flex items-center">
-                  <Calendar className="w-4 h-4 mr-1" />
-                  Posted {new Date(job.created_at).toLocaleDateString()}
-                </div>
+              <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">{job.title}</h1>
+              <div className="flex flex-wrap items-center gap-4 text-sm text-gray-500">
+                <span className="flex items-center"><MapPin className="w-4 h-4 mr-1" /> {job.location.address}</span>
+                <span className="flex items-center"><Clock className="w-4 h-4 mr-1" /> {job.preferred_time_window?.start} - {job.preferred_time_window?.end}</span>
               </div>
             </div>
-            <div className="text-right">
-              <div className="text-2xl font-bold text-orange-600">₹{job.budget_amount?.toLocaleString()}</div>
-              {job.is_budget_negotiable && (
-                <span className="text-sm text-green-600">Negotiable</span>
-              )}
+            <div className="text-left md:text-right">
+              <p className="text-3xl font-extrabold text-orange-600">₹{job.budget_amount.toLocaleString()}</p>
+              {job.is_budget_negotiable && <p className="text-sm font-medium text-emerald-600">Budget Negotiable</p>}
             </div>
           </div>
+          
+          {/* Action Footer for Customer */}
+          {isCustomer && job.status === 'completed' && (
+            <div className="px-6 py-4 bg-orange-50 border-t border-orange-100 flex items-center justify-between">
+              <p className="text-sm text-orange-800 font-medium">Job has been completed and payment settled.</p>
+              <button
+                onClick={() => setShowReviewModal(true)}
+                className="flex items-center px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 shadow-sm transition-all"
+              >
+                <Star className="w-4 h-4 mr-2" />
+                Rate Worker
+              </button>
+            </div>
+          )}
         </div>
 
-        {/* Tabs */}
-        <div className="bg-white rounded-lg shadow-sm border mb-6">
-          <div className="border-b border-gray-200">
-            <nav className="flex">
+        {/* Content Tabs */}
+        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+          <div className="border-b border-gray-100">
+            <nav className="flex px-4" aria-label="Tabs">
               {[
-                { id: 'details', name: 'Job Details', icon: FileText },
-                { id: 'applicants', name: job.type === 'daily' ? `Applications (${applications.length})` : `Bids (${bids.length})`, icon: Users }
+                { id: 'details', name: 'Details', icon: FileText },
+                { id: 'applicants', name: job.type === 'daily' ? `Applicants (${applications.length})` : `Bids (${bids.length})`, icon: Users }
               ].map((tab) => (
                 <button
                   key={tab.id}
                   onClick={() => setSelectedTab(tab.id)}
-                  className={`flex items-center px-6 py-3 text-sm font-medium border-b-2 ${
+                  className={`flex items-center px-6 py-4 text-sm font-semibold border-b-2 transition-colors ${
                     selectedTab === tab.id
                       ? 'border-orange-500 text-orange-600'
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-200'
                   }`}
                 >
                   <tab.icon className="w-4 h-4 mr-2" />
@@ -768,135 +885,94 @@ const JobDetails = () => {
             </nav>
           </div>
 
-          <div className="p-6">
-            {selectedTab === 'details' && (
-              <div className="space-y-6">
+          <div className="p-6 sm:p-8">
+            {selectedTab === 'details' ? (
+              <div className="space-y-8">
                 <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-3">Description</h3>
-                  <p className="text-gray-700 leading-relaxed">{job.description}</p>
+                  <h3 className="text-lg font-bold text-gray-900 mb-3">Job Description</h3>
+                  <p className="text-gray-600 leading-relaxed text-lg">{job.description}</p>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {job.photos && job.photos.length > 0 && (
                   <div>
-                    <h4 className="font-medium text-gray-900 mb-2">Job Category</h4>
-                    <p className="text-gray-600 capitalize">{job.category?.replace('_', ' ')}</p>
+                    <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                      <Camera className="w-5 h-5 mr-2 text-orange-600" />
+                      Job Photos
+                    </h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                      {job.photos.map((photo, idx) => (
+                        <div key={idx} className="aspect-square rounded-xl overflow-hidden border border-gray-100 group cursor-pointer relative shadow-sm">
+                          <img 
+                            src={photo.startsWith('http') ? photo : `${BACKEND_URL}${photo}`} 
+                            alt={`Job work ${idx + 1}`}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="font-medium text-gray-900 mb-2">Preferred Time</h4>
-                    <p className="text-gray-600">
-                      {job.preferred_time_window?.start} - {job.preferred_time_window?.end}
-                    </p>
-                  </div>
-                  <div>
-                    <h4 className="font-medium text-gray-900 mb-2">Location</h4>
-                    <p className="text-gray-600">{job.location?.address}</p>
-                  </div>
-                  <div>
-                    <h4 className="font-medium text-gray-900 mb-2">Budget</h4>
-                    <p className="text-gray-600">
-                      ₹{job.budget_amount?.toLocaleString()} 
-                      {job.is_budget_negotiable && ' (Negotiable)'}
-                    </p>
-                  </div>
-                </div>
+                )}
               </div>
-            )}
-
-            {selectedTab === 'applicants' && (
-              <div>
-                {job.type === 'daily' ? (
-                  <div className="space-y-4">
-                    <h3 className="text-lg font-semibold text-gray-900">Applications ({applications.length})</h3>
-                    {applications.length > 0 ? (
-                      applications.map((application) => (
-                        <div key={application.id} className="border border-gray-200 rounded-lg p-4">
-                          <div className="flex justify-between items-start">
-                            <div className="flex-1">
-                              <div className="flex items-center gap-3 mb-2">
-                                <UserCircle className="w-8 h-8 text-gray-400" />
-                                <div>
-                                  <h4 className="font-medium text-gray-900">Worker #{application.worker_id.slice(0, 8)}</h4>
-                                  <p className="text-sm text-gray-500">Applied {new Date(application.created_at).toLocaleDateString()}</p>
-                                </div>
-                              </div>
-                              {application.message && (
-                                <p className="text-gray-700 mt-2">{application.message}</p>
-                              )}
-                            </div>
-                            {application.status === 'pending' && job.status === 'open' && (
-                              <button
-                                onClick={() => handleAssignWorker(application.worker_id)}
-                                className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700"
-                              >
-                                <UserCheck className="w-4 h-4 mr-2 inline" />
-                                Select Worker
-                              </button>
+            ) : (
+              <div className="space-y-6">
+                {(job.type === 'daily' ? applications : bids).map((item) => (
+                  <div key={item.id} className={`p-4 sm:p-6 rounded-2xl border ${item.status === 'accepted' ? 'border-orange-200 bg-orange-50' : 'border-gray-100 hover:border-orange-200 transition-colors'}`}>
+                    <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
+                      <div className="flex gap-4">
+                        <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center">
+                          <UserCircle className="w-8 h-8 text-gray-400" />
+                        </div>
+                        <div>
+                          <h4 className="font-bold text-gray-900 mb-1">{item.worker_info?.name || `Worker #${item.worker_id.slice(0, 5)}`}</h4>
+                          <div className="flex items-center gap-3">
+                            <StarRating 
+                              rating={item.worker_info?.rating_avg || 0} 
+                              count={item.worker_info?.reviews_count || 0} 
+                            />
+                            {item.status === 'accepted' && (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold bg-green-100 text-green-800">
+                                SELECTED
+                              </span>
                             )}
                           </div>
                         </div>
-                      ))
-                    ) : (
-                      <div className="text-center py-8 text-gray-500">
-                        No applications yet. Share your job to get more visibility.
+                      </div>
+                      <div className="w-full sm:w-auto text-left sm:text-right">
+                        {job.type === 'contractual' && (
+                          <p className="text-2xl font-bold text-orange-600">₹{item.bid_amount?.toLocaleString()}</p>
+                        )}
+                        <p className="text-sm text-gray-500">Submitted {new Date(item.created_at).toLocaleDateString()}</p>
+                      </div>
+                    </div>
+                    {item.message && (
+                      <p className="mt-4 text-gray-600 bg-white bg-opacity-50 p-4 rounded-xl text-sm italic border border-gray-100 italic">
+                        "{item.message}"
+                      </p>
+                    )}
+                    {isCustomer && job.status === 'open' && (
+                      <div className="mt-6">
+                        <button
+                          onClick={() => handleAssignWorker(item.worker_id)}
+                          className="w-full sm:w-auto px-6 py-2.5 bg-orange-600 text-white font-bold rounded-xl hover:bg-orange-700 shadow-md hover:shadow-lg transition-all"
+                        >
+                          {job.type === 'daily' ? 'Hire This Worker' : 'Accept This Bid'}
+                        </button>
                       </div>
                     )}
                   </div>
-                ) : (
-                  <div className="space-y-4">
-                    <h3 className="text-lg font-semibold text-gray-900">Bids ({bids.length})</h3>
-                    {bids.length > 0 ? (
-                      bids.map((bid) => (
-                        <div key={bid.id} className="border border-gray-200 rounded-lg p-4">
-                          <div className="flex justify-between items-start">
-                            <div className="flex-1">
-                              <div className="flex items-center justify-between mb-3">
-                                <div className="flex items-center gap-3">
-                                  <UserCircle className="w-8 h-8 text-gray-400" />
-                                  <div>
-                                    <h4 className="font-medium text-gray-900">Worker #{bid.worker_id.slice(0, 8)}</h4>
-                                    <p className="text-sm text-gray-500">Bid submitted {new Date(bid.created_at).toLocaleDateString()}</p>
-                                  </div>
-                                </div>
-                                <div className="text-right">
-                                  <div className="text-lg font-bold text-orange-600">₹{bid.bid_amount?.toLocaleString()}</div>
-                                  {bid.visiting_charge > 0 && (
-                                    <div className="text-sm text-gray-500">+ ₹{bid.visiting_charge} visiting charge</div>
-                                  )}
-                                </div>
-                              </div>
-                              {bid.message && (
-                                <p className="text-gray-700 bg-gray-50 p-3 rounded-lg">{bid.message}</p>
-                              )}
-                            </div>
-                          </div>
-                          {bid.status === 'pending' && job.status === 'open' && (
-                            <div className="mt-4 pt-4 border-t border-gray-200 flex gap-3">
-                              <button
-                                onClick={() => handleAssignWorker(bid.worker_id)}
-                                className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 flex items-center"
-                              >
-                                <Handshake className="w-4 h-4 mr-2" />
-                                Accept Bid
-                              </button>
-                              <button className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50">
-                                View Profile
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      ))
-                    ) : (
-                      <div className="text-center py-8 text-gray-500">
-                        No bids yet. Your job is live and workers can start bidding.
-                      </div>
-                    )}
-                  </div>
-                )}
+                ))}
               </div>
             )}
           </div>
         </div>
       </div>
+      
+      <ReviewModal 
+        isOpen={showReviewModal} 
+        onClose={() => setShowReviewModal(false)} 
+        onSubmit={handleSubmitReview}
+        workerName={job.type === 'daily' ? applications.find(a => a.status === 'accepted')?.worker_info?.name : bids.find(b => b.status === 'accepted')?.worker_info?.name}
+      />
     </div>
   );
 };
@@ -1107,6 +1183,50 @@ const PostJobForm = () => {
     photos: []
   });
   const [loading, setLoading] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const fileInputRef = useRef(null);
+
+  const handleImageUpload = async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+
+    setUploadingImage(true);
+    const newPhotos = [...jobData.photos];
+
+    try {
+      for (const file of files) {
+        if (file.size > 10 * 1024 * 1024) {
+          toast.error(`${file.name} is larger than 10MB`);
+          continue;
+        }
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const response = await axios.post(`${API}/upload`, formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        });
+        
+        newPhotos.push(response.data.url);
+      }
+      handleInputChange('photos', newPhotos);
+      if (newPhotos.length > jobData.photos.length) {
+        toast.success('Images uploaded successfully');
+      }
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Failed to upload images');
+    } finally {
+      setUploadingImage(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
+  const removePhoto = (index) => {
+    const newPhotos = [...jobData.photos];
+    newPhotos.splice(index, 1);
+    handleInputChange('photos', newPhotos);
+  };
 
   const categories = [
     { value: 'skilled', label: 'Skilled Work', icon: Wrench, desc: 'Plumbing, electrical, carpentry' },
@@ -1303,11 +1423,43 @@ const PostJobForm = () => {
         <label className="block text-sm font-medium text-gray-700 mb-2">
           Add Photos (Optional)
         </label>
-        <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
-          <Camera className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <p className="text-gray-600">Click to upload photos of the work area</p>
-          <p className="text-sm text-gray-500 mt-1">PNG, JPG up to 10MB</p>
+        <div 
+          onClick={() => !uploadingImage && fileInputRef.current?.click()}
+          className={`border-2 border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors ${uploadingImage ? 'border-orange-300 bg-orange-50' : 'border-gray-300 hover:border-orange-500'}`}
+        >
+          {uploadingImage ? (
+            <Loader2 className="w-12 h-12 mx-auto mb-4 text-orange-500 animate-spin" />
+          ) : (
+            <Camera className="w-12 h-12 mx-auto mb-4 text-gray-400" />
+          )}
+          <p className="text-gray-600 font-medium">{uploadingImage ? 'Uploading Photos...' : 'Click to upload photos of the work area'}</p>
+          <p className="text-sm text-gray-500 mt-1">PNG, JPG, WEBP up to 10MB</p>
+          <input 
+            type="file" 
+            multiple 
+            accept="image/*" 
+            className="hidden" 
+            ref={fileInputRef}
+            onChange={handleImageUpload}
+            disabled={uploadingImage}
+          />
         </div>
+        {jobData.photos.length > 0 && (
+          <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
+            {jobData.photos.map((url, idx) => (
+              <div key={idx} className="relative group rounded-lg overflow-hidden border border-gray-200">
+                <img src={`${BACKEND_URL}${url}`} alt={`Preview ${idx + 1}`} className="w-full h-24 object-cover" />
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); removePhoto(idx); }}
+                  className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-1 opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100 shadow-sm"
+                >
+                  <XCircle className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1561,6 +1713,18 @@ const FindJobs = () => {
           <h3 className="text-lg font-semibold text-gray-900 mb-2">{job.title}</h3>
           <p className="text-gray-600 text-sm line-clamp-2 mb-3">{job.description}</p>
         </div>
+        {job.photos && job.photos.length > 0 && (
+          <div className="ml-4 flex-shrink-0 w-24 h-24 rounded-lg overflow-hidden border border-gray-100">
+            <img 
+              src={job.photos[0].startsWith('http') ? job.photos[0] : `${BACKEND_URL}${job.photos[0]}`} 
+              alt="Job preview" 
+              className="w-full h-full object-cover"
+              onError={(e) => {
+                e.target.style.display = 'none';
+              }}
+            />
+          </div>
+        )}
         <div className="text-right ml-4">
           <div className="text-xl font-bold text-orange-600">₹{job.budget_amount.toLocaleString()}</div>
           {job.is_budget_negotiable && (
@@ -1581,22 +1745,31 @@ const FindJobs = () => {
           <span>{job.applications_count + job.bids_count} {job.type === 'daily' ? 'applications' : 'bids'}</span>
           <span>Posted {new Date(job.created_at).toLocaleDateString()}</span>
         </div>
-        <button
-          onClick={() => handleApply(job.id, job.type)}
-          className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors flex items-center"
-        >
-          {job.type === 'daily' ? (
-            <>
-              <Send className="w-4 h-4 mr-2" />
-              Apply Now
-            </>
-          ) : (
-            <>
-              <DollarSign className="w-4 h-4 mr-2" />
-              Place Bid
-            </>
-          )}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => navigate(`/jobs/${job.id}`)}
+            className="px-4 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors flex items-center"
+          >
+            <Eye className="w-4 h-4 mr-2" />
+            Details
+          </button>
+          <button
+            onClick={() => handleApply(job.id, job.type)}
+            className="px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 transition-colors flex items-center"
+          >
+            {job.type === 'daily' ? (
+              <>
+                <Send className="w-4 h-4 mr-2" />
+                Apply Now
+              </>
+            ) : (
+              <>
+                <DollarSign className="w-4 h-4 mr-2" />
+                Place Bid
+              </>
+            )}
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -1740,8 +1913,8 @@ const AuthPage = () => {
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-amber-50 flex items-center justify-center p-4">
       <div className="max-w-md w-full">
         <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-orange-600 mb-2">Shidhaan</h1>
-          <p className="text-gray-600">Blue Collar Marketplace</p>
+          <h1 className="text-4xl font-bold text-orange-600 mb-2">Sanyuth</h1>
+          <p className="text-gray-600">AI Powered - Blue Collar Marketplace</p>
         </div>
 
         <div className="bg-white rounded-xl shadow-lg p-8">
@@ -1964,7 +2137,10 @@ const CustomerDashboard = () => {
             <Briefcase className="w-4 h-4 mr-2" />
             Manage Jobs
           </button>
-          <button className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors">
+          <button 
+            onClick={() => navigate('/messages')}
+            className="flex items-center px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50 transition-colors"
+          >
             <MessageCircle className="w-4 h-4 mr-2" />
             View Messages
           </button>
@@ -1990,8 +2166,21 @@ const CustomerDashboard = () => {
               onClick={() => navigate(`/jobs/${job.id}`)}
             >
               <div className="flex items-center justify-between">
-                <div className="flex-1">
-                  <h3 className="text-sm font-medium text-gray-900">{job.title}</h3>
+                <div className="flex items-center flex-1">
+                  {job.photos && job.photos.length > 0 && (
+                    <div className="w-12 h-12 rounded-md overflow-hidden bg-gray-100 mr-4 flex-shrink-0">
+                      <img 
+                        src={job.photos[0].startsWith('http') ? job.photos[0] : `${BACKEND_URL}${job.photos[0]}`} 
+                        alt="Job" 
+                        className="w-full h-full object-cover"
+                        onError={(e) => {
+                          e.target.parentNode.style.display = 'none';
+                        }}
+                      />
+                    </div>
+                  )}
+                  <div className="flex-1">
+                    <h3 className="text-sm font-medium text-gray-900">{job.title}</h3>
                   <div className="flex items-center mt-1 space-x-4">
                     <div className="flex items-center text-sm text-gray-500">
                       <MapPin className="w-4 h-4 mr-1" />
@@ -2011,6 +2200,7 @@ const CustomerDashboard = () => {
                     </span>
                   </div>
                 </div>
+              </div>
                 <div className="text-right">
                   <p className="text-sm font-medium text-gray-900">
                     {job.applications_count + job.bids_count} {job.type === 'daily' ? 'Applications' : 'Bids'}
@@ -2040,17 +2230,58 @@ const CustomerDashboard = () => {
 
 const WorkerDashboard = () => {
   const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState({
+    stats: {
+      availableJobs: 0,
+      appliedJobs: 0,
+      activeJobs: 0,
+      profileCompletion: 85,
+    },
+    recentApplications: []
+  });
+
+  useEffect(() => {
+    fetchDashboardData();
+  }, []);
+
+  const fetchDashboardData = async () => {
+    try {
+      setLoading(true);
+      const response = await axios.get(`${API}/worker/dashboard-data`);
+      setData(response.data);
+    } catch (error) {
+      console.error('Failed to fetch worker dashboard data:', error);
+      toast.error('Failed to load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  };
   
+  if (loading) {
+    return (
+      <div className="p-6">
+        <div className="animate-pulse space-y-4">
+          <div className="h-8 bg-gray-200 rounded w-1/4 mb-6"></div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            {[1, 2, 3].map(i => <div key={i} className="h-48 bg-gray-100 rounded-lg shadow-sm border"></div>)}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <div className="p-6">
+    <div className="p-6 max-w-6xl mx-auto">
       <h1 className="text-2xl font-bold text-gray-900 mb-6">Worker Dashboard</h1>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <div className="bg-white p-6 rounded-lg shadow-sm border">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold">Available Jobs</h2>
-            <Search className="w-5 h-5 text-gray-400" />
+            <Search className="w-5 h-5 text-orange-400" />
           </div>
-          <p className="text-3xl font-bold text-orange-600">25</p>
+          <p className="text-3xl font-bold text-orange-600">{data.stats.availableJobs}</p>
           <p className="text-gray-600 text-sm mb-4">In your area</p>
           <button 
             onClick={() => navigate('/find-jobs')}
@@ -2063,28 +2294,122 @@ const WorkerDashboard = () => {
         <div className="bg-white p-6 rounded-lg shadow-sm border">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold">Applied Jobs</h2>
-            <Calendar className="w-5 h-5 text-gray-400" />
+            <Calendar className="w-5 h-5 text-blue-400" />
           </div>
-          <p className="text-3xl font-bold text-blue-600">8</p>
-          <p className="text-gray-600 text-sm mb-4">Awaiting response</p>
-          <button className="w-full border border-gray-300 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-50 transition-colors">
+          <p className="text-3xl font-bold text-blue-600">{data.stats.appliedJobs}</p>
+          <p className="text-gray-600 text-sm mb-4">Total applications & bids</p>
+          <button 
+            onClick={() => document.getElementById('recent-apps')?.scrollIntoView({ behavior: 'smooth' })}
+            className="w-full border border-gray-300 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-50 transition-colors"
+          >
             View Applications
           </button>
         </div>
         
         <div className="bg-white p-6 rounded-lg shadow-sm border">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold">Profile</h2>
-            <User className="w-5 h-5 text-gray-400" />
+            <h2 className="text-lg font-semibold">Reputation</h2>
+            <Star className="w-5 h-5 text-yellow-500" />
           </div>
-          <p className="text-3xl font-bold text-green-600">85%</p>
-          <p className="text-gray-600 text-sm mb-4">Profile Complete</p>
-          <button 
-            onClick={() => navigate('/profile')}
-            className="w-full border border-gray-300 text-gray-700 py-2 px-4 rounded-md hover:bg-gray-50 transition-colors"
-          >
-            Complete Profile
-          </button>
+          <div className="flex items-end gap-2 mb-1">
+            <p className="text-3xl font-bold text-gray-900">{data.stats.ratingAvg?.toFixed(1) || '0.0'}</p>
+            <div className="mb-1.5">
+              <StarRating rating={data.stats.ratingAvg || 0} />
+            </div>
+          </div>
+          <p className="text-gray-600 text-sm mb-4">From {data.stats.reviewsCount || 0} reviews</p>
+          <div className="w-full bg-gray-100 h-2 rounded-full overflow-hidden">
+            <div 
+              className="bg-yellow-400 h-full transition-all duration-500" 
+              style={{ width: `${(data.stats.ratingAvg || 0) * 20}%` }}
+            ></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Recent Applications Section */}
+        <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+            <h2 className="text-lg font-bold text-gray-900">Recent Applications</h2>
+            <button 
+              onClick={() => navigate('/my-jobs')}
+              className="text-sm text-orange-600 font-semibold hover:text-orange-700"
+            >
+              View All
+            </button>
+          </div>
+          <div className="divide-y divide-gray-100">
+            {data.recentApplications && data.recentApplications.map((app) => (
+              <div 
+                key={app.id} 
+                className="p-4 hover:bg-gray-50 transition-colors cursor-pointer group"
+                onClick={() => navigate(`/jobs/${app.id}`)}
+              >
+                <div className="flex justify-between items-center">
+                  <div>
+                    <h3 className="font-bold text-gray-900 group-hover:text-orange-600 transition-colors">{app.title}</h3>
+                    <div className="flex items-center gap-3 mt-1">
+                      <span className="text-sm text-gray-500">₹{app.budget_amount?.toLocaleString()}</span>
+                      <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                        app.application_status === 'accepted' ? 'bg-green-100 text-green-700' :
+                        app.application_status === 'rejected' ? 'bg-red-100 text-red-700' :
+                        'bg-blue-100 text-blue-700'
+                      }`}>
+                        {app.application_status}
+                      </span>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-5 h-5 text-gray-300 group-hover:text-orange-400 group-hover:translate-x-1 transition-all" />
+                </div>
+              </div>
+            ))}
+            {(!data.recentApplications || data.recentApplications.length === 0) && (
+              <div className="p-8 text-center text-gray-500 italic">
+                You haven't applied to any jobs yet.
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Recent Reviews Section */}
+        <div className="bg-white rounded-lg shadow-sm border overflow-hidden">
+          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
+            <h2 className="text-lg font-bold text-gray-900">Latest Feedback</h2>
+            <div className="flex items-center text-yellow-700 bg-yellow-50 px-2 py-1 rounded text-xs font-bold ring-1 ring-yellow-200">
+              <Star className="w-3 h-3 mr-1 fill-current" />
+              {data.stats.ratingAvg?.toFixed(1) || '0.0'}
+            </div>
+          </div>
+          <div className="divide-y divide-gray-100">
+            {data.recentReviews && data.recentReviews.length > 0 ? (
+              data.recentReviews.map((review, idx) => (
+                <div key={idx} className="p-4 space-y-2">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <p className="text-sm font-bold text-gray-900">{review.reviewer_name}</p>
+                      <StarRating rating={review.stars} />
+                    </div>
+                    <span className="text-[10px] text-gray-400 font-medium">
+                      {new Date(review.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  {review.comment && (
+                    <p className="text-gray-600 text-sm italic leading-relaxed bg-gray-50 p-3 rounded-lg border-l-4 border-yellow-400">
+                      "{review.comment}"
+                    </p>
+                  )}
+                </div>
+              ))
+            ) : (
+              <div className="p-12 text-center">
+                <div className="w-16 h-16 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-4 border border-dashed border-gray-300">
+                  <Star className="w-8 h-8 text-gray-300" />
+                </div>
+                <p className="text-gray-500 text-sm italic">No reviews yet. Complete jobs to build your reputation!</p>
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -2148,7 +2473,7 @@ function App() {
       <div className="flex items-center justify-center h-screen bg-gradient-to-br from-orange-50 to-amber-50">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600 mx-auto mb-4"></div>
-          <h2 className="text-xl font-semibold text-orange-600">Shidhaan</h2>
+          <h2 className="text-xl font-semibold text-orange-600">Sanyuth</h2>
           <p className="text-gray-600">Loading...</p>
         </div>
       </div>
@@ -2205,7 +2530,7 @@ function App() {
           <Route
             path="/jobs/:jobId"
             element={
-              <ProtectedRoute requiredRole="customer">
+              <ProtectedRoute>
                 <JobDetails />
               </ProtectedRoute>
             }
@@ -2263,6 +2588,16 @@ function App() {
             element={
               <ProtectedRoute requiredRole="admin">
                 <AdminAnalyticsComponent />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Messaging Routes */}
+          <Route
+            path="/messages"
+            element={
+              <ProtectedRoute>
+                <MessagingHub user={user} />
               </ProtectedRoute>
             }
           />
