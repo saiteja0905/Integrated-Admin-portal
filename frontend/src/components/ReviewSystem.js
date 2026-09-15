@@ -2,9 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Star, Send, User, Calendar, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { API, getErrorMessage } from '../lib/api';
 
 export const ReviewModal = ({ isOpen, onClose, job, revieweeId, revieweeName, onSuccess }) => {
   const [rating, setRating] = useState(5);
@@ -27,7 +25,7 @@ export const ReviewModal = ({ isOpen, onClose, job, revieweeId, revieweeName, on
       onSuccess?.();
       onClose();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to submit review');
+      toast.error(getErrorMessage(error, 'Failed to submit review'));
     } finally {
       setLoading(false);
     }

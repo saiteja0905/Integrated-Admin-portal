@@ -2,9 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Bell, Check, X, Briefcase, IndianRupee, MessageCircle, Star, AlertCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { API } from '../lib/api';
 
 export const NotificationBell = () => {
   const [notifications, setNotifications] = useState([]);
@@ -56,6 +54,7 @@ export const NotificationBell = () => {
 
   const getNotificationIcon = (type) => {
     switch (type) {
+      case 'new_job':
       case 'job_application':
       case 'job_assigned':
         return <Briefcase className="w-5 h-5 text-blue-600" />;
@@ -233,6 +232,7 @@ export const NotificationToasts = () => {
 
 const getNotificationIcon = (type) => {
   switch (type) {
+    case 'new_job':
     case 'job_application':
     case 'job_assigned':
       return <Briefcase className="w-5 h-5 text-blue-600" />;

@@ -2,9 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Send, Phone, Shield, AlertCircle, CheckCircle2, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { API, getErrorMessage } from '../lib/api';
 
 export const ChatSystem = ({ jobId, currentUser, otherUser }) => {
   const [messages, setMessages] = useState([]);
@@ -52,7 +50,7 @@ export const ChatSystem = ({ jobId, currentUser, otherUser }) => {
       setNewMessage('');
       fetchMessages();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to send message');
+      toast.error(getErrorMessage(error, 'Failed to send message'));
     } finally {
       setSending(false);
     }
@@ -124,7 +122,7 @@ export const ChatSystem = ({ jobId, currentUser, otherUser }) => {
         <div className="text-right text-sm text-gray-500">
           <div className="flex items-center">
             <Phone className="w-4 h-4 mr-1" />
-            {otherUser?.phone?.replace(/(\d{2})\d{6}(\d{2})/, '$1****$2') || '****'}
+            {otherUser?.phone ? otherUser.phone.replace(/(\d{2})\d{6}(\d{2})/, '$1****$2') : 'Number hidden'}
           </div>
         </div>
       </div>

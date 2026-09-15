@@ -1,48 +1,63 @@
 import React, { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import axios from 'axios';
 import { toast } from 'sonner';
 import { MessageCircle, Briefcase } from 'lucide-react';
 import { ChatSystem } from './ChatSystem';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
-const API = `${BACKEND_URL}/api`;
+import { API, getErrorMessage } from '../lib/api';
 
 export const MessagingHub = ({ user }) => {
+  const location = useLocation();
+  const preselectedJobId = location.state?.jobId;
   const [activeJobs, setActiveJobs] = useState([]);
   const [selectedJob, setSelectedJob] = useState(null);
+  const [participants, setParticipants] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchActiveJobs();
-  }, [user]);
+  }, [user?.id]);
+
+  // Load the real name of the other party for the selected conversation
+  useEffect(() => {
+    if (!selectedJob) {
+      setParticipants(null);
+      return undefined;
+    }
+    let cancelled = false;
+    axios.get(`${API}/jobs/${selectedJob.id}/participants`)
+      .then((response) => { if (!cancelled) setParticipants(response.data); })
+      .catch(() => { if (!cancelled) setParticipants(null); });
+    return () => { cancelled = true; };
+  }, [selectedJob?.id]);
 
   const fetchActiveJobs = async () => {
     try {
-      const response = await axios.get(`${API}/jobs`);
-      // Filter jobs where the current user is involved and it's not simply 'open' or 'draft'
-      const relevantJobs = response.data.filter(job => 
+      // Only jobs the current user takes part in (posted by them, or assigned to them)
+      const response = await axios.get(`${API}/jobs`, { params: { mine: true, limit: 100 } });
+      const relevantJobs = response.data.filter(job =>
         ['assigned', 'in_progress', 'completed'].includes(job.status)
       );
       setActiveJobs(relevantJobs);
-      
-      if (relevantJobs.length > 0 && !selectedJob) {
-        setSelectedJob(relevantJobs[0]);
-      }
+      setSelectedJob(current =>
+        current
+        || relevantJobs.find(job => job.id === preselectedJobId)
+        || relevantJobs[0]
+        || null
+      );
     } catch (error) {
-      toast.error('Failed to load active conversations');
+      toast.error(getErrorMessage(error, 'Failed to load active conversations'));
     } finally {
       setLoading(false);
     }
   };
 
-  const getOpponent = (job) => {
-    // For a real platform, we'd fetch the exact user details.
-    // For demo purposes, we'll label it based on the current user's role.
-    const isCustomer = user?.role === 'customer';
-    return {
-      name: isCustomer ? 'Assigned Worker' : 'Customer (Client)',
-      phone: '9876543210' // Masked automatically by ChatSystem
-    };
+  const isCustomer = user?.role === 'customer';
+  const counterpartLabel = isCustomer ? 'Assigned Worker' : 'Customer';
+
+  const getOpponent = () => {
+    const other = isCustomer ? participants?.worker : participants?.customer;
+    return { name: other?.name || counterpartLabel };
   };
 
   if (loading) {
@@ -63,7 +78,7 @@ export const MessagingHub = ({ user }) => {
             Messages
           </h2>
         </div>
-        
+
         <div className="flex-1 overflow-y-auto">
           {activeJobs.length === 0 ? (
             <div className="p-8 text-center text-gray-500 text-sm">
@@ -72,7 +87,7 @@ export const MessagingHub = ({ user }) => {
             </div>
           ) : (
             activeJobs.map(job => (
-              <div 
+              <div
                 key={job.id}
                 onClick={() => setSelectedJob(job)}
                 className={`p-4 border-b cursor-pointer transition-colors ${
@@ -83,7 +98,9 @@ export const MessagingHub = ({ user }) => {
                   <h3 className="font-semibold text-gray-900 truncate pr-4">{job.title}</h3>
                   <span className="text-xs px-2 py-1 bg-gray-100 rounded-full">{job.status}</span>
                 </div>
-                <p className="text-sm text-gray-600 truncate">{getOpponent(job).name}</p>
+                <p className="text-sm text-gray-600 truncate">
+                  {selectedJob?.id === job.id ? getOpponent().name : counterpartLabel}
+                </p>
               </div>
             ))
           )}
@@ -97,10 +114,11 @@ export const MessagingHub = ({ user }) => {
             <h3 className="text-sm font-semibold text-gray-500 mb-2 uppercase tracking-wide">
               Regarding: {selectedJob.title}
             </h3>
-            <ChatSystem 
-              jobId={selectedJob.id} 
-              currentUser={user} 
-              otherUser={getOpponent(selectedJob)}
+            <ChatSystem
+              key={selectedJob.id}
+              jobId={selectedJob.id}
+              currentUser={user}
+              otherUser={getOpponent()}
             />
           </div>
         ) : (

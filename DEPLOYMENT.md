@@ -115,16 +115,26 @@ fly secrets set MONGO_URL="mongodb+srv://shidhaan_user:your_password@cluster0.xx
 # Set database name
 fly secrets set DB_NAME="shidhaan_marketplace"
 
-# Set JWT secret
-fly secrets set JWT_SECRET="your-super-secret-jwt-key-change-this-in-production"
+# Set JWT secret (required: without it every restart logs all users out,
+# and multiple machines will reject each other's tokens)
+fly secrets set JWT_SECRET="$(openssl rand -hex 32)"
 
 # Set Razorpay credentials
 fly secrets set RAZORPAY_KEY_ID="rzp_test_your_key_id_here"
 fly secrets set RAZORPAY_KEY_SECRET="your_razorpay_secret_here"
 
-# Set frontend backend URL (will be your Fly.io app URL)
-fly secrets set REACT_APP_BACKEND_URL="https://your-app-name.fly.dev"
+# Restrict cross-origin API access to your own domain
+fly secrets set CORS_ORIGINS="https://your-app-name.fly.dev"
 ```
+
+> The frontend is built into the image and calls the API on the same origin, so
+> `REACT_APP_BACKEND_URL` does not need to be set for Fly.io.
+
+### 4.3.1 Uploaded Files
+Job photos are written to `UPLOAD_DIR` (default `backend/uploads` inside the container).
+Without persistent storage they are lost on every deploy or machine restart. Either
+attach a Fly volume and point `UPLOAD_DIR` at it (the mount must be writable by the
+container's `app` user), or move uploads to object storage such as Tigris/S3.
 
 ### 4.4 Deploy to Fly.io
 ```bash
@@ -274,8 +284,8 @@ After successful deployment:
 
 ## Default Admin Credentials
 
-After running `create_demo_users.py`:
-- **Email**: admin@shidhaan.com
+After running `create_demo_users.py` (login is by phone number):
+- **Phone**: 9876543212
 - **Password**: admin123
 
 **⚠️ Important**: Change these credentials immediately after deployment!

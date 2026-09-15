@@ -1,17 +1,19 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Request, Query, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import DuplicateKeyError
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field, EmailStr, field_validator
+from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
 from jose import JWTError, jwt
 import os
 import logging
+import secrets
 import uuid
 import re
 import razorpay
@@ -22,8 +24,12 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
-# Create uploads directory
-UPLOAD_DIR = ROOT_DIR / "uploads"
+# Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Uploads directory (override with UPLOAD_DIR to point at a persistent volume)
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or ROOT_DIR / "uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # MongoDB connection
@@ -32,9 +38,22 @@ client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
 # Security
-SECRET_KEY = os.environ.get("JWT_SECRET", "your-secret-key-change-in-production")
+# Secrets that have been published in this repository must never be used to sign tokens.
+_PUBLISHED_JWT_SECRETS = {
+    "",
+    "your-secret-key-change-in-production",
+    "your-super-secret-jwt-key-change-this-in-production",
+}
+SECRET_KEY = os.environ.get("JWT_SECRET", "").strip()
+if SECRET_KEY in _PUBLISHED_JWT_SECRETS:
+    SECRET_KEY = secrets.token_urlsafe(48)
+    logger.warning(
+        "JWT_SECRET is not set or uses a published default. Using a random per-process "
+        "secret: sessions end on restart and are not shared between instances. "
+        "Set JWT_SECRET to a long random value (e.g. `openssl rand -hex 32`)."
+    )
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "30"))
 
 # Razorpay Setup (using placeholder keys for demo)
 RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "rzp_test_placeholder")
@@ -52,7 +71,8 @@ except Exception as e:
     logging.warning(f"Razorpay client initialization failed: {e}")
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-security = HTTPBearer()
+# auto_error=False so a missing token yields 401 (not FastAPI's default 403)
+security = HTTPBearer(auto_error=False)
 
 # Create FastAPI app
 app = FastAPI(title="Shidhaan API", version="1.0.0")
@@ -207,28 +227,49 @@ async def seed_demo_data():
         logger.error(f"❌ Error seeding demo data: {e}")
 
 
+async def ensure_indexes():
+    """Create the indexes the app relies on for correctness, not just speed."""
+    index_specs = [
+        ("users", "phone", {"unique": True}),
+        ("users", "id", {"unique": True}),
+        ("jobs", "id", {"unique": True}),
+        ("jobs", "customer_id", {}),
+        ("assignments", "job_id", {"unique": True}),
+        ("notifications", "user_id", {}),
+    ]
+    for collection, key, options in index_specs:
+        try:
+            await db[collection].create_index(key, **options)
+        except Exception as e:
+            logger.warning(f"Could not create index on {collection}.{key}: {e}")
+
+
 @app.on_event("startup")
 async def startup_event():
     """Run on application startup"""
     logger.info("🚀 Starting Shidhaan API...")
+    await ensure_indexes()
     await seed_demo_data()
 
 
-# CORS middleware
+# CORS middleware. Auth uses bearer tokens (not cookies), so credentials are not needed.
+cors_origins = [
+    origin.strip()
+    for origin in os.environ.get(
+        "CORS_ORIGINS", "http://localhost:3000,http://localhost:8000"
+    ).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_credentials=False,
+    allow_origins=cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # Serve static uploads
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
-
-# Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # =============================================================================
 # MODELS
@@ -290,12 +331,23 @@ class MessageType(str):
 
 
 class NotificationType(str):
+    NEW_JOB = "new_job"
     JOB_APPLICATION = "job_application"
     JOB_ASSIGNED = "job_assigned"
     BID_RECEIVED = "bid_received"
     PAYMENT_RECEIVED = "payment_received"
     JOB_COMPLETED = "job_completed"
     MESSAGE_RECEIVED = "message_received"
+
+
+def normalize_phone(raw: str) -> str:
+    """Reduce a phone number to its 10 national digits (drops spaces, dashes, +91, leading 0)."""
+    digits = re.sub(r"\D", "", raw or "")
+    if len(digits) == 12 and digits.startswith("91"):
+        digits = digits[2:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    return digits
 
 
 # User Models
@@ -312,10 +364,56 @@ class UserBase(BaseModel):
     languages: List[str] = ["en"]
     location: Optional[Location] = None
 
+    @field_validator("email", mode="before")
+    @classmethod
+    def blank_email_to_none(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
 
-class UserCreate(UserBase):
-    password: str
-    role: str
+
+class UserCreate(BaseModel):
+    name: str = Field(max_length=100)
+    phone: str
+    email: Optional[EmailStr] = None
+    languages: List[str] = ["en"]
+    location: Optional[Location] = None
+    password: str = Field(min_length=6, max_length=72)
+    # Admin accounts can only be created by operators, never through self sign-up.
+    role: Literal["customer", "worker"]
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def blank_email_to_none(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+    @field_validator("name")
+    @classmethod
+    def name_not_blank(cls, value):
+        value = value.strip()
+        if not value:
+            raise ValueError("Name is required")
+        return value
+
+    @field_validator("phone")
+    @classmethod
+    def valid_phone(cls, value):
+        phone = normalize_phone(value)
+        if len(phone) != 10:
+            raise ValueError("Enter a valid 10-digit phone number")
+        return phone
+
+    @field_validator("password")
+    @classmethod
+    def password_fits_bcrypt(cls, value):
+        # bcrypt only uses the first 72 bytes; reject rather than silently truncate
+        if len(value.encode("utf-8")) > 72:
+            raise ValueError("Password is too long")
+        return value
 
 
 class UserLogin(BaseModel):
@@ -329,6 +427,18 @@ class User(UserBase):
     rating_avg: float = 0.0
     reviews_count: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class PublicUser(BaseModel):
+    """User fields that are safe to show to other users (no phone or email)."""
+
+    id: str
+    name: str
+    role: str
+    languages: List[str] = ["en"]
+    rating_avg: float = 0.0
+    reviews_count: int = 0
+    created_at: datetime
 
 
 class Token(BaseModel):
@@ -353,10 +463,10 @@ class WorkerProfile(BaseModel):
 
 class WorkerProfileCreate(BaseModel):
     skills: List[str] = []
-    experience_years: int = 0
+    experience_years: int = Field(default=0, ge=0, le=80)
     certifications: List[str] = []
     preferred_locations: List[Location] = []
-    service_radius_km: int = 10
+    service_radius_km: int = Field(default=10, ge=1, le=200)
 
 
 # Job Models
@@ -377,7 +487,21 @@ class JobBase(BaseModel):
 
 
 class JobCreate(JobBase):
-    type: str  # daily or contractual
+    # Strict input validation lives here so existing documents still load through Job.
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=5000)
+    category: Literal["skilled", "daily_wage"]
+    budget_amount: float = Field(gt=0, le=10_000_000)
+    photos: List[str] = Field(default_factory=list, max_length=10)
+    type: Literal["daily", "contractual"]
+
+    @field_validator("photos")
+    @classmethod
+    def photos_are_uploads(cls, value):
+        for url in value:
+            if not isinstance(url, str) or not url.startswith("/uploads/"):
+                raise ValueError("Photos must be uploaded through /api/upload")
+        return value
 
 
 class Job(JobBase):
@@ -407,11 +531,27 @@ class Application(ApplicationBase):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class WorkerInfo(BaseModel):
+    name: str
+    rating_avg: float = 0.0
+    reviews_count: int = 0
+
+
+class ApplicationWithWorker(Application):
+    worker_info: Optional[WorkerInfo] = None
+
+
 # Bid Models (for Contractual jobs)
 class BidBase(BaseModel):
     bid_amount: float
     visiting_charge: float = 0.0
     message: str = ""
+
+
+class BidInput(BaseModel):
+    bid_amount: float = Field(gt=0, le=10_000_000)
+    visiting_charge: float = Field(default=0.0, ge=0, le=1_000_000)
+    message: str = Field(default="", max_length=2000)
 
 
 class BidCreate(BidBase):
@@ -424,6 +564,10 @@ class Bid(BidBase):
     worker_id: str
     status: str = ApplicationStatus.PENDING
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class BidWithWorker(Bid):
+    worker_info: Optional[WorkerInfo] = None
 
 
 # Assignment Models
@@ -442,12 +586,13 @@ class Assignment(BaseModel):
 # Review Models
 class ReviewBase(BaseModel):
     stars: int = Field(ge=1, le=5)
-    comment: str = ""
+    comment: str = Field(default="", max_length=2000)
 
 
 class ReviewCreate(ReviewBase):
-    job_id: str
-    reviewee_user_id: str
+    # Both are optional: the server derives the reviewee from the job's assignment.
+    job_id: Optional[str] = None
+    reviewee_user_id: Optional[str] = None
 
 
 class Review(ReviewBase):
@@ -461,8 +606,15 @@ class Review(ReviewBase):
 # Payment Models
 class PaymentCreate(BaseModel):
     job_id: str
-    amount: float
-    method: str = PaymentMethod.COD
+    # Optional and only used as a consistency check: the server charges the agreed amount.
+    amount: Optional[float] = None
+    method: Literal["cod", "upi", "card"] = "cod"
+
+
+class PaymentVerify(BaseModel):
+    payment_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
 
 
 class Payment(BaseModel):
@@ -491,8 +643,9 @@ class ChatMessage(BaseModel):
 
 
 class ChatMessageCreate(BaseModel):
-    content: str
-    message_type: str = MessageType.TEXT
+    content: str = Field(min_length=1, max_length=2000)
+    # "system" messages can only be created by the server
+    message_type: Literal["text", "location"] = "text"
 
 
 # Notification Models
@@ -549,6 +702,30 @@ def mask_phone_number(phone: str) -> str:
     return "****"
 
 
+# A run of digits that may be broken up by spaces, dashes, dots or brackets, e.g.
+# "9876543210", "98765 43210", "+91-98765-43210", "(987) 654 3210"
+PHONE_CANDIDATE_RE = re.compile(r"(?<!\w)\+?\d[\d\s\-().]{8,}\d(?!\w)")
+
+
+def mask_phone_numbers(text: str) -> str:
+    """Mask every phone-number-like sequence (10+ digits) in free text."""
+
+    def _mask(match):
+        digits = re.sub(r"\D", "", match.group())
+        if len(digits) < 10:
+            return match.group()
+        return mask_phone_number(digits)
+
+    return PHONE_CANDIDATE_RE.sub(_mask, text)
+
+
+def strip_mongo_id(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Remove MongoDB's ObjectId so the document can be JSON-serialized."""
+    if doc is not None:
+        doc.pop("_id", None)
+    return doc
+
+
 async def create_notification(
     user_id: str, notification_type: str, title: str, message: str, data: Dict = None
 ):
@@ -564,12 +741,32 @@ async def create_notification(
     return notification
 
 
+async def get_worker_info_map(worker_ids: List[str]) -> Dict[str, WorkerInfo]:
+    """Fetch display info for many workers in one query."""
+    if not worker_ids:
+        return {}
+    workers = await db.users.find(
+        {"id": {"$in": list(set(worker_ids))}},
+        {"_id": 0, "id": 1, "name": 1, "rating_avg": 1, "reviews_count": 1},
+    ).to_list(length=None)
+    return {
+        w["id"]: WorkerInfo(
+            name=w.get("name", "Worker"),
+            rating_avg=w.get("rating_avg", 0.0),
+            reviews_count=w.get("reviews_count", 0),
+        )
+        for w in workers
+    }
+
+
 # =============================================================================
 # AUTH UTILITIES
 # =============================================================================
 
 
 def verify_password(plain_password, hashed_password):
+    if not hashed_password:
+        return False
     return pwd_context.verify(plain_password, hashed_password)
 
 
@@ -589,13 +786,19 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
 
 
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ):
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     try:
         token = credentials.credentials
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -608,13 +811,13 @@ async def get_current_user(
     user_doc = await db.users.find_one({"id": user_id})
     if user_doc is None:
         raise credentials_exception
-        
+
     if user_doc.get("status") == "suspended":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Your account has been suspended by an administrator."
         )
-        
+
     return User(**user_doc)
 
 
@@ -630,6 +833,14 @@ def require_role(required_role: str):
     return role_checker
 
 
+def issue_token(user: User) -> Token:
+    access_token = create_access_token(
+        data={"sub": user.id},
+        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+    )
+    return Token(access_token=access_token, token_type="bearer", user=user)
+
+
 # =============================================================================
 # AUTH ROUTES
 # =============================================================================
@@ -637,42 +848,51 @@ def require_role(required_role: str):
 
 @api_router.post("/auth/register", response_model=Token)
 async def register(user_data: UserCreate):
-    # Check if user already exists
+    # Check if user already exists (phone is already normalized by UserCreate)
     existing_user = await db.users.find_one({"phone": user_data.phone})
     if existing_user:
         raise HTTPException(
             status_code=400, detail="User with this phone number already exists"
         )
 
+    if user_data.email:
+        existing_email = await db.users.find_one({"email": user_data.email})
+        if existing_email:
+            raise HTTPException(
+                status_code=400, detail="User with this email already exists"
+            )
+
     # Create user
     hashed_password = get_password_hash(user_data.password)
-    user_dict = user_data.model_dump()
-    user_dict["password_hash"] = hashed_password
-    del user_dict["password"]
+    user_dict = user_data.model_dump(exclude={"password"})
 
     user = User(**user_dict)
     user_doc = user.model_dump()
     user_doc["password_hash"] = hashed_password
+    user_doc["status"] = "active"
 
-    await db.users.insert_one(user_doc)
+    try:
+        await db.users.insert_one(user_doc)
+    except DuplicateKeyError:
+        raise HTTPException(
+            status_code=400, detail="User with this phone number already exists"
+        )
 
     # Create worker profile if role is worker
     if user.role == UserRole.WORKER:
         worker_profile = WorkerProfile(user_id=user.id)
         await db.worker_profiles.insert_one(worker_profile.model_dump())
 
-    # Generate token
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.id}, expires_delta=access_token_expires
-    )
-
-    return Token(access_token=access_token, token_type="bearer", user=user)
+    return issue_token(user)
 
 
 @api_router.post("/auth/login", response_model=Token)
 async def login(credentials: UserLogin):
-    user_doc = await db.users.find_one({"phone": credentials.phone})
+    # Accept any formatting of the number; fall back to the raw value for legacy accounts.
+    user_doc = await db.users.find_one({"phone": normalize_phone(credentials.phone)})
+    if not user_doc:
+        user_doc = await db.users.find_one({"phone": credentials.phone.strip()})
+
     if not user_doc or not verify_password(
         credentials.password, user_doc.get("password_hash")
     ):
@@ -682,13 +902,13 @@ async def login(credentials: UserLogin):
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = User(**user_doc)
-    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.id}, expires_delta=access_token_expires
-    )
+    if user_doc.get("status") == "suspended":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Your account has been suspended by an administrator.",
+        )
 
-    return Token(access_token=access_token, token_type="bearer", user=user)
+    return issue_token(User(**user_doc))
 
 
 @api_router.get("/auth/me", response_model=User)
@@ -701,12 +921,12 @@ async def get_current_user_info(current_user: User = Depends(get_current_user)):
 # =============================================================================
 
 
-@api_router.get("/users/{user_id}", response_model=User)
-async def get_user(user_id: str):
+@api_router.get("/users/{user_id}", response_model=PublicUser)
+async def get_user(user_id: str, current_user: User = Depends(get_current_user)):
     user_doc = await db.users.find_one({"id": user_id})
     if not user_doc:
         raise HTTPException(status_code=404, detail="User not found")
-    return User(**user_doc)
+    return PublicUser(**user_doc)
 
 
 # =============================================================================
@@ -732,10 +952,14 @@ async def update_worker_profile(
     profile_data: WorkerProfileCreate,
     current_user: User = Depends(require_role(UserRole.WORKER)),
 ):
-    update_data = profile_data.model_dump()
+    # Only overwrite fields the client actually sent, so omitted fields keep their values
+    update_data = profile_data.model_dump(exclude_unset=True)
 
+    update: Dict[str, Any] = {"$setOnInsert": {"id": str(uuid.uuid4())}}
+    if update_data:
+        update["$set"] = update_data
     await db.worker_profiles.update_one(
-        {"user_id": current_user.id}, {"$set": update_data}, upsert=True
+        {"user_id": current_user.id}, update, upsert=True
     )
 
     profile_doc = await db.worker_profiles.find_one({"user_id": current_user.id})
@@ -743,35 +967,69 @@ async def update_worker_profile(
 
 
 # =============================================================================
-# JOB ROUTES WITH ADVANCED SEARCH
+# FILE UPLOADS
 # =============================================================================
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
+def looks_like_image(file_ext: str, head: bytes) -> bool:
+    """Check the file's magic bytes match its extension."""
+    if file_ext in (".jpg", ".jpeg"):
+        return head.startswith(b"\xff\xd8\xff")
+    if file_ext == ".png":
+        return head.startswith(b"\x89PNG\r\n\x1a\n")
+    if file_ext == ".webp":
+        return head[:4] == b"RIFF" and head[8:12] == b"WEBP"
+    return False
+
 
 @api_router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...), current_user: User = Depends(get_current_user)
 ):
-    """Upload a file securely and return its URL"""
-    file_ext = os.path.splitext(file.filename)[1].lower()
-    
+    """Upload an image securely and return its URL"""
+    file_ext = os.path.splitext(file.filename or "")[1].lower()
+
     # Validate extension
     allowed_exts = {".jpg", ".jpeg", ".png", ".webp"}
     if file_ext not in allowed_exts:
         raise HTTPException(status_code=400, detail="Only JPG, PNG, and WEBP files are allowed.")
-        
+
     safe_filename = f"{uuid.uuid4()}{file_ext}"
     file_path = UPLOAD_DIR / safe_filename
 
-    # Read and save file
-    content = await file.read()
-    
-    # Restrict to ~10MB
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File too large. Max 10MB allowed.")
-        
+    # Stream to disk so a large upload is rejected without being held in memory
+    error_detail = None
+    size = 0
     with open(file_path, "wb") as f:
-        f.write(content)
+        while True:
+            chunk = await file.read(UPLOAD_CHUNK_BYTES)
+            if not chunk:
+                break
+            if size == 0 and not looks_like_image(file_ext, chunk[:12]):
+                error_detail = "File content is not a valid JPG, PNG, or WEBP image."
+                break
+            size += len(chunk)
+            if size > MAX_UPLOAD_BYTES:
+                error_detail = "File too large. Max 10MB allowed."
+                break
+            f.write(chunk)
+
+    if error_detail is None and size == 0:
+        error_detail = "Uploaded file is empty."
+
+    if error_detail:
+        file_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=error_detail)
 
     return {"url": f"/uploads/{safe_filename}", "filename": safe_filename}
+
+
+# =============================================================================
+# JOB ROUTES WITH ADVANCED SEARCH
+# =============================================================================
 
 
 @api_router.post("/jobs", response_model=Job)
@@ -784,9 +1042,7 @@ async def create_job(
 
     await db.jobs.insert_one(job.model_dump())
 
-    # Create notification for nearby workers (if location-based search is enabled)
-    await notify_nearby_workers(job)
-
+    # Workers are notified when the job is published, not while it is a draft
     return job
 
 
@@ -810,15 +1066,23 @@ async def notify_nearby_workers(job: Job):
         ]
         job_skills = [skill for skill in common_skills if skill in job_text]
 
-    # Query workers within radius
-    workers = await db.worker_profiles.find().to_list(length=None)
+    # Only load the fields needed for matching
+    workers = await db.worker_profiles.find(
+        {},
+        {
+            "_id": 0,
+            "user_id": 1,
+            "skills": 1,
+            "preferred_locations": 1,
+            "service_radius_km": 1,
+        },
+    ).to_list(length=None)
 
+    notifications = []
     for worker_profile in workers:
         # Check if worker has matching skills or is in service radius
-        has_matching_skills = any(
-            skill.lower() in [s.lower() for s in worker_profile.get("skills", [])]
-            for skill in job_skills
-        )
+        worker_skills = [s.lower() for s in worker_profile.get("skills", [])]
+        has_matching_skills = any(skill in worker_skills for skill in job_skills)
 
         # Check distance for workers with preferred locations
         within_radius = False
@@ -831,13 +1095,18 @@ async def notify_nearby_workers(job: Job):
                 break
 
         if has_matching_skills or within_radius:
-            await create_notification(
-                worker_profile["user_id"],
-                NotificationType.JOB_APPLICATION,
-                "New Job Available",
-                f"A new {job.type} job '{job.title}' is available in your area",
-                {"job_id": job.id, "job_type": job.type},
+            notifications.append(
+                Notification(
+                    user_id=worker_profile["user_id"],
+                    type=NotificationType.NEW_JOB,
+                    title="New Job Available",
+                    message=f"A new {job.type} job '{job.title}' is available in your area",
+                    data={"job_id": job.id, "job_type": job.type},
+                ).model_dump()
             )
+
+    if notifications:
+        await db.notifications.insert_many(notifications)
 
 
 @api_router.post("/jobs/search", response_model=List[Job])
@@ -848,9 +1117,10 @@ async def search_jobs(
     query = {"status": JobStatus.OPEN}
 
     if filters.search_term:
+        pattern = re.escape(filters.search_term)
         query["$or"] = [
-            {"title": {"$regex": filters.search_term, "$options": "i"}},
-            {"description": {"$regex": filters.search_term, "$options": "i"}},
+            {"title": {"$regex": pattern, "$options": "i"}},
+            {"description": {"$regex": pattern, "$options": "i"}},
         ]
 
     if filters.job_type:
@@ -859,17 +1129,17 @@ async def search_jobs(
     if filters.category:
         query["category"] = filters.category
 
-    if filters.min_budget:
+    if filters.min_budget is not None:
         query["budget_amount"] = {"$gte": filters.min_budget}
 
-    if filters.max_budget:
+    if filters.max_budget is not None:
         if "budget_amount" in query:
             query["budget_amount"]["$lte"] = filters.max_budget
         else:
             query["budget_amount"] = {"$lte": filters.max_budget}
 
     # Execute query
-    jobs = await db.jobs.find(query).to_list(length=None)
+    jobs = await db.jobs.find(query).to_list(length=1000)
     job_list = [Job(**job) for job in jobs]
 
     # Apply location-based filtering
@@ -924,32 +1194,125 @@ async def search_jobs(
     return job_list
 
 
+JOB_SORTS = {
+    "recent": [("created_at", -1)],
+    "budget_high": [("budget_amount", -1), ("created_at", -1)],
+    "budget_low": [("budget_amount", 1), ("created_at", -1)],
+}
+
+
 @api_router.get("/jobs", response_model=List[Job])
 async def get_jobs(
     status: Optional[str] = None,
     type: Optional[str] = None,
     category: Optional[str] = None,
-    limit: int = 20,
-    skip: int = 0,
+    search: Optional[str] = None,
+    mine: bool = False,
+    sort: str = "recent",
+    limit: int = Query(20, ge=1, le=100),
+    skip: int = Query(0, ge=0),
+    current_user: User = Depends(get_current_user),
 ):
-    filter_dict = {}
-    if status:
-        filter_dict["status"] = status
+    """List jobs.
+
+    - mine=true: the caller's own jobs (customers: jobs they posted, any status;
+      workers: jobs assigned to them).
+    - otherwise: the public marketplace, which only ever shows open jobs
+      (admins may filter by any non-draft status).
+    """
+    filter_dict: Dict[str, Any] = {}
+
+    if mine:
+        if current_user.role == UserRole.CUSTOMER:
+            filter_dict["customer_id"] = current_user.id
+        elif current_user.role == UserRole.WORKER:
+            assignments = await db.assignments.find(
+                {"worker_id": current_user.id}, {"_id": 0, "job_id": 1}
+            ).to_list(length=None)
+            filter_dict["id"] = {"$in": [a["job_id"] for a in assignments]}
+        else:
+            return []
+        if status:
+            filter_dict["status"] = status
+    elif current_user.role == UserRole.ADMIN:
+        if status == JobStatus.DRAFT:
+            return []
+        filter_dict["status"] = status if status else {"$ne": JobStatus.DRAFT}
+    else:
+        filter_dict["status"] = JobStatus.OPEN
+
     if type:
         filter_dict["type"] = type
     if category:
         filter_dict["category"] = category
+    if search:
+        pattern = re.escape(search)
+        filter_dict["$or"] = [
+            {"title": {"$regex": pattern, "$options": "i"}},
+            {"description": {"$regex": pattern, "$options": "i"}},
+        ]
 
-    jobs = await db.jobs.find(filter_dict).skip(skip).limit(limit).to_list(length=None)
+    jobs = (
+        await db.jobs.find(filter_dict)
+        .sort(JOB_SORTS.get(sort, JOB_SORTS["recent"]))
+        .skip(skip)
+        .limit(limit)
+        .to_list(length=None)
+    )
     return [Job(**job) for job in jobs]
 
 
 @api_router.get("/jobs/{job_id}", response_model=Job)
-async def get_job(job_id: str):
+async def get_job(job_id: str, current_user: User = Depends(get_current_user)):
     job_doc = await db.jobs.find_one({"id": job_id})
     if not job_doc:
         raise HTTPException(status_code=404, detail="Job not found")
+    if (
+        job_doc.get("status") == JobStatus.DRAFT
+        and job_doc["customer_id"] != current_user.id
+        and current_user.role != UserRole.ADMIN
+    ):
+        raise HTTPException(status_code=404, detail="Job not found")
     return Job(**job_doc)
+
+
+@api_router.get("/jobs/{job_id}/participants")
+async def get_job_participants(
+    job_id: str, current_user: User = Depends(get_current_user)
+):
+    """Names of the customer and assigned worker, for the two of them (and admins)."""
+    job_doc = await db.jobs.find_one({"id": job_id})
+    if not job_doc:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    assignment = await db.assignments.find_one({"job_id": job_id})
+    worker_id = assignment["worker_id"] if assignment else None
+
+    if (
+        current_user.id not in (job_doc["customer_id"], worker_id)
+        and current_user.role != UserRole.ADMIN
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    async def public_name(user_id: Optional[str]):
+        if not user_id:
+            return None
+        doc = await db.users.find_one({"id": user_id}, {"_id": 0, "id": 1, "name": 1})
+        return doc or {"id": user_id, "name": "User"}
+
+    return {
+        "customer": await public_name(job_doc["customer_id"]),
+        "worker": await public_name(worker_id),
+        "assignment": (
+            {
+                "id": assignment["id"],
+                "final_amount": assignment["final_amount"],
+                "status": assignment.get("status"),
+            }
+            if assignment
+            else None
+        ),
+    }
 
 
 @api_router.put("/jobs/{job_id}/publish")
@@ -961,7 +1324,13 @@ async def publish_job(job_id: str, current_user: User = Depends(get_current_user
     if job_doc["customer_id"] != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    await db.jobs.update_one({"id": job_id}, {"$set": {"status": JobStatus.OPEN}})
+    # Only drafts can be published; this must never reopen an assigned/completed job
+    result = await db.jobs.update_one(
+        {"id": job_id, "status": JobStatus.DRAFT},
+        {"$set": {"status": JobStatus.OPEN}},
+    )
+    if result.modified_count == 0:
+        raise HTTPException(status_code=400, detail="Only draft jobs can be published")
 
     # Notify nearby workers
     job = Job(**job_doc)
@@ -1001,6 +1370,7 @@ async def apply_to_job(
 
     # Create application
     app_dict = application_data.model_dump()
+    app_dict["message"] = app_dict["message"][:2000]
     app_dict["job_id"] = job_id
     app_dict["worker_id"] = current_user.id
     application = Application(**app_dict)
@@ -1022,7 +1392,9 @@ async def apply_to_job(
     return application
 
 
-@api_router.get("/jobs/{job_id}/applications", response_model=List[Application])
+@api_router.get(
+    "/jobs/{job_id}/applications", response_model=List[ApplicationWithWorker]
+)
 async def get_job_applications(
     job_id: str, current_user: User = Depends(get_current_user)
 ):
@@ -1038,20 +1410,12 @@ async def get_job_applications(
         raise HTTPException(status_code=403, detail="Access denied")
 
     applications = await db.applications.find({"job_id": job_id}).to_list(length=None)
-    
-    # Enrich with worker info
-    enriched_apps = []
-    for app in applications:
-        worker = await db.users.find_one({"id": app["worker_id"]})
-        if worker:
-            app["worker_info"] = {
-                "name": worker["name"],
-                "rating_avg": worker.get("rating_avg", 0.0),
-                "reviews_count": worker.get("reviews_count", 0)
-            }
-        enriched_apps.append(app)
-        
-    return enriched_apps
+    workers = await get_worker_info_map([a["worker_id"] for a in applications])
+
+    return [
+        ApplicationWithWorker(**app, worker_info=workers.get(app["worker_id"]))
+        for app in applications
+    ]
 
 
 # =============================================================================
@@ -1062,7 +1426,7 @@ async def get_job_applications(
 @api_router.post("/jobs/{job_id}/bid", response_model=Bid)
 async def place_bid(
     job_id: str,
-    bid_data: BidBase,
+    bid_data: BidInput,
     current_user: User = Depends(require_role(UserRole.WORKER)),
 ):
     # Check if job exists and is contractual type
@@ -1092,29 +1456,29 @@ async def place_bid(
         )
         bid_dict["id"] = existing_bid["id"]
         bid_dict["created_at"] = existing_bid["created_at"]
-    else:
-        # Create new bid
-        bid = Bid(**bid_dict)
-        await db.bids.insert_one(bid.model_dump())
+        bid_dict["status"] = existing_bid.get("status", ApplicationStatus.PENDING)
+        return Bid(**bid_dict)
 
-        # Update job bids count
-        await db.jobs.update_one({"id": job_id}, {"$inc": {"bids_count": 1}})
+    # Create new bid
+    bid = Bid(**bid_dict)
+    await db.bids.insert_one(bid.model_dump())
 
-        # Notify customer
-        await create_notification(
-            job_doc["customer_id"],
-            NotificationType.BID_RECEIVED,
-            "New Bid Received",
-            f"A worker has placed a bid of ₹{bid_data.bid_amount} for your job '{job_doc['title']}'",
-            {"job_id": job_id, "bid_id": bid.id, "amount": bid_data.bid_amount},
-        )
+    # Update job bids count
+    await db.jobs.update_one({"id": job_id}, {"$inc": {"bids_count": 1}})
 
-        return bid
+    # Notify customer
+    await create_notification(
+        job_doc["customer_id"],
+        NotificationType.BID_RECEIVED,
+        "New Bid Received",
+        f"A worker has placed a bid of ₹{bid_data.bid_amount} for your job '{job_doc['title']}'",
+        {"job_id": job_id, "bid_id": bid.id, "amount": bid_data.bid_amount},
+    )
 
-    return Bid(**bid_dict)
+    return bid
 
 
-@api_router.get("/jobs/{job_id}/bids", response_model=List[Bid])
+@api_router.get("/jobs/{job_id}/bids", response_model=List[BidWithWorker])
 async def get_job_bids(job_id: str, current_user: User = Depends(get_current_user)):
     # Verify job ownership or admin access
     job_doc = await db.jobs.find_one({"id": job_id})
@@ -1128,20 +1492,11 @@ async def get_job_bids(job_id: str, current_user: User = Depends(get_current_use
         raise HTTPException(status_code=403, detail="Access denied")
 
     bids = await db.bids.find({"job_id": job_id}).to_list(length=None)
-    
-    # Enrich with worker info
-    enriched_bids = []
-    for bid in bids:
-        worker = await db.users.find_one({"id": bid["worker_id"]})
-        if worker:
-            bid["worker_info"] = {
-                "name": worker["name"],
-                "rating_avg": worker.get("rating_avg", 0.0),
-                "reviews_count": worker.get("reviews_count", 0)
-            }
-        enriched_bids.append(bid)
-        
-    return enriched_bids
+    workers = await get_worker_info_map([b["worker_id"] for b in bids])
+
+    return [
+        BidWithWorker(**bid, worker_info=workers.get(bid["worker_id"])) for bid in bids
+    ]
 
 
 # =============================================================================
@@ -1149,63 +1504,55 @@ async def get_job_bids(job_id: str, current_user: User = Depends(get_current_use
 # =============================================================================
 
 
+async def build_worker_applications(worker_id: str) -> List[Dict[str, Any]]:
+    """Every job a worker applied to or bid on, newest first."""
+    applications = await db.applications.find({"worker_id": worker_id}).to_list(
+        length=None
+    )
+    bids = await db.bids.find({"worker_id": worker_id}).to_list(length=None)
+
+    job_ids = list({a["job_id"] for a in applications} | {b["job_id"] for b in bids})
+    jobs = {}
+    if job_ids:
+        job_docs = await db.jobs.find({"id": {"$in": job_ids}}).to_list(length=None)
+        jobs = {job["id"]: job for job in job_docs}
+
+    applied_jobs = []
+    seen_job_ids = set()
+    for entry in applications + bids:
+        job = jobs.get(entry["job_id"])
+        if not job or job["id"] in seen_job_ids:
+            continue
+        seen_job_ids.add(job["id"])
+        applied_jobs.append(
+            {
+                "id": job["id"],
+                "title": job["title"],
+                "status": job["status"],
+                "application_status": entry["status"],
+                "type": job["type"],
+                "budget_amount": job["budget_amount"],
+                "applied_at": entry["created_at"],
+            }
+        )
+
+    applied_jobs.sort(key=lambda x: x["applied_at"], reverse=True)
+    return applied_jobs
+
+
+@api_router.get("/worker/applications")
+async def get_worker_applications(
+    current_user: User = Depends(require_role(UserRole.WORKER)),
+):
+    return await build_worker_applications(current_user.id)
+
+
 @api_router.get("/worker/dashboard-data")
 async def get_worker_dashboard_data(current_user: User = Depends(get_current_user)):
     if current_user.role != UserRole.WORKER:
         raise HTTPException(status_code=403, detail="Only workers can access this data")
 
-    # Get all applications by this worker
-    applications = (
-        await db.applications.find({"worker_id": current_user.id})
-        .sort("created_at", -1)
-        .to_list(length=None)
-    )
-
-    # Get all bids by this worker
-    bids = (
-        await db.bids.find({"worker_id": current_user.id})
-        .sort("created_at", -1)
-        .to_list(length=None)
-    )
-
-    # Prepare list of applied jobs with details
-    applied_jobs = []
-    applied_job_ids = set()
-
-    for app in applications:
-        job = await db.jobs.find_one({"id": app["job_id"]})
-        if job:
-            applied_jobs.append(
-                {
-                    "id": job["id"],
-                    "title": job["title"],
-                    "status": job["status"],
-                    "application_status": app["status"],
-                    "type": job["type"],
-                    "budget_amount": job["budget_amount"],
-                    "applied_at": app["created_at"],
-                }
-            )
-            applied_job_ids.add(job["id"])
-
-    for bid in bids:
-        if bid["job_id"] not in applied_job_ids:
-            job = await db.jobs.find_one({"id": bid["job_id"]})
-            if job:
-                applied_jobs.append(
-                    {
-                        "id": job["id"],
-                        "title": job["title"],
-                        "status": job["status"],
-                        "application_status": bid["status"],
-                        "type": job["type"],
-                        "budget_amount": job["budget_amount"],
-                        "applied_at": bid["created_at"],
-                    }
-                )
-
-    # Sort applied jobs by date
-    applied_jobs.sort(key=lambda x: x["applied_at"], reverse=True)
+    applied_jobs = await build_worker_applications(current_user.id)
 
     # Calculate stats
     # 1. Available jobs (total open jobs in system)
@@ -1223,9 +1570,13 @@ async def get_worker_dashboard_data(current_user: User = Depends(get_current_use
 
     # 5. Get recent reviews for the worker
     recent_reviews = await db.reviews.find({"reviewee_user_id": current_user.id}).sort("created_at", -1).limit(5).to_list(length=None)
-    for review in recent_reviews:
-        reviewer = await db.users.find_one({"id": review["reviewer_user_id"]})
-        review["reviewer_name"] = reviewer["name"] if reviewer else "Customer"
+    reviewer_ids = list({r["reviewer_user_id"] for r in recent_reviews})
+    reviewers = {}
+    if reviewer_ids:
+        reviewer_docs = await db.users.find(
+            {"id": {"$in": reviewer_ids}}, {"_id": 0, "id": 1, "name": 1}
+        ).to_list(length=None)
+        reviewers = {r["id"]: r["name"] for r in reviewer_docs}
 
     return {
         "stats": {
@@ -1241,7 +1592,7 @@ async def get_worker_dashboard_data(current_user: User = Depends(get_current_use
             {
                 "stars": r["stars"],
                 "comment": r["comment"],
-                "reviewer_name": r["reviewer_name"],
+                "reviewer_name": reviewers.get(r["reviewer_user_id"], "Customer"),
                 "created_at": r["created_at"]
             } for r in recent_reviews
         ]
@@ -1269,69 +1620,52 @@ async def assign_job(
             status_code=400, detail="Job is not available for assignment"
         )
 
-    # Determine final amount based on job type
+    # Find the worker's pending application (daily) or bid (contractual)
+    if job_doc["type"] == JobType.DAILY:
+        offers, not_found = db.applications, "Application not found"
+    else:
+        offers, not_found = db.bids, "Bid not found"
+
+    offer = await offers.find_one(
+        {"job_id": job_id, "worker_id": worker_id, "status": ApplicationStatus.PENDING}
+    )
+    if not offer:
+        raise HTTPException(status_code=404, detail=not_found)
+
     if job_doc["type"] == JobType.DAILY:
         # For daily jobs, use the fixed budget
         final_amount = job_doc["budget_amount"]
-
-        # Verify application exists
-        app_doc = await db.applications.find_one(
-            {
-                "job_id": job_id,
-                "worker_id": worker_id,
-                "status": ApplicationStatus.PENDING,
-            }
-        )
-        if not app_doc:
-            raise HTTPException(status_code=404, detail="Application not found")
-
-        # Update application status
-        await db.applications.update_one(
-            {"job_id": job_id, "worker_id": worker_id},
-            {"$set": {"status": ApplicationStatus.ACCEPTED}},
-        )
-
-        # Reject other applications
-        await db.applications.update_many(
-            {"job_id": job_id, "worker_id": {"$ne": worker_id}},
-            {"$set": {"status": ApplicationStatus.REJECTED}},
-        )
-
-    else:  # CONTRACTUAL
+    else:
         # For contractual jobs, use the bid amount
-        bid_doc = await db.bids.find_one(
-            {
-                "job_id": job_id,
-                "worker_id": worker_id,
-                "status": ApplicationStatus.PENDING,
-            }
-        )
-        if not bid_doc:
-            raise HTTPException(status_code=404, detail="Bid not found")
+        final_amount = offer["bid_amount"] + offer.get("visiting_charge", 0)
 
-        final_amount = bid_doc["bid_amount"] + bid_doc.get("visiting_charge", 0)
-
-        # Update bid status
-        await db.bids.update_one(
-            {"job_id": job_id, "worker_id": worker_id},
-            {"$set": {"status": ApplicationStatus.ACCEPTED}},
+    # Claim the job atomically so two concurrent assignments cannot both succeed
+    claimed = await db.jobs.update_one(
+        {"id": job_id, "status": JobStatus.OPEN},
+        {"$set": {"status": JobStatus.ASSIGNED}},
+    )
+    if claimed.modified_count == 0:
+        raise HTTPException(
+            status_code=409, detail="Job is no longer available for assignment"
         )
 
-        # Reject other bids
-        await db.bids.update_many(
-            {"job_id": job_id, "worker_id": {"$ne": worker_id}},
-            {"$set": {"status": ApplicationStatus.REJECTED}},
-        )
+    # Accept this offer, reject the others
+    await offers.update_one(
+        {"job_id": job_id, "worker_id": worker_id},
+        {"$set": {"status": ApplicationStatus.ACCEPTED}},
+    )
+    await offers.update_many(
+        {"job_id": job_id, "worker_id": {"$ne": worker_id}},
+        {"$set": {"status": ApplicationStatus.REJECTED}},
+    )
 
-    # Create assignment
+    # Create assignment (replacing any stale one left by older builds)
     assignment = Assignment(
         job_id=job_id, worker_id=worker_id, final_amount=final_amount
     )
-
-    await db.assignments.insert_one(assignment.model_dump())
-
-    # Update job status
-    await db.jobs.update_one({"id": job_id}, {"$set": {"status": JobStatus.ASSIGNED}})
+    await db.assignments.replace_one(
+        {"job_id": job_id}, assignment.model_dump(), upsert=True
+    )
 
     # Notify worker
     await create_notification(
@@ -1349,16 +1683,14 @@ async def assign_job(
 # PAYMENT ROUTES
 # =============================================================================
 
+PAYABLE_JOB_STATUSES = [JobStatus.ASSIGNED, JobStatus.IN_PROGRESS]
+SETTLED_PAYMENT_STATUSES = [PaymentStatus.SUCCEEDED, PaymentStatus.RECORDED_COD]
+
 
 @api_router.post("/payments/create-order")
 async def create_payment_order(
     payment_data: PaymentCreate, current_user: User = Depends(get_current_user)
 ):
-    # Verify job assignment exists
-    assignment = await db.assignments.find_one({"job_id": payment_data.job_id})
-    if not assignment:
-        raise HTTPException(status_code=404, detail="Job assignment not found")
-
     job_doc = await db.jobs.find_one({"id": payment_data.job_id})
     if not job_doc:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -1367,35 +1699,61 @@ async def create_payment_order(
     if job_doc["customer_id"] != current_user.id:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    # Verify job assignment exists
+    assignment = await db.assignments.find_one({"job_id": payment_data.job_id})
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Job assignment not found")
+
+    if job_doc["status"] not in PAYABLE_JOB_STATUSES:
+        raise HTTPException(
+            status_code=400, detail="Payment can only be made for an assigned job"
+        )
+
+    already_paid = await db.payments.find_one(
+        {"job_id": payment_data.job_id, "status": {"$in": SETTLED_PAYMENT_STATUSES}}
+    )
+    if already_paid:
+        raise HTTPException(status_code=400, detail="This job has already been paid")
+
+    # The amount is always the one agreed at assignment time
+    amount = float(assignment["final_amount"])
+    if payment_data.amount is not None and abs(payment_data.amount - amount) > 0.01:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Payment amount must equal the agreed amount of ₹{amount:g}",
+        )
+
     # Create payment record
     payment = Payment(
         job_id=payment_data.job_id,
         payer_id=current_user.id,
         payee_id=assignment["worker_id"],
         method=payment_data.method,
-        amount=payment_data.amount,
+        amount=amount,
     )
 
     if payment_data.method == PaymentMethod.COD:
-        # For COD, mark as recorded
+        # Complete the job atomically so a double submit cannot record two payments
+        completed = await db.jobs.update_one(
+            {"id": payment_data.job_id, "status": {"$in": PAYABLE_JOB_STATUSES}},
+            {"$set": {"status": JobStatus.COMPLETED}},
+        )
+        if completed.modified_count == 0:
+            raise HTTPException(status_code=409, detail="This job has already been paid")
+
         payment.status = PaymentStatus.RECORDED_COD
         await db.payments.insert_one(payment.model_dump())
-
-        # Update job status
-        await db.jobs.update_one(
-            {"id": payment_data.job_id}, {"$set": {"status": JobStatus.COMPLETED}}
-        )
 
         # Notify worker
         await create_notification(
             assignment["worker_id"],
             NotificationType.PAYMENT_RECEIVED,
             "Payment Recorded - COD",
-            f"Cash payment of ₹{payment_data.amount} has been recorded for job '{job_doc['title']}'",
+            f"Cash payment of ₹{amount:g} has been recorded for job '{job_doc['title']}'",
             {
                 "job_id": payment_data.job_id,
                 "payment_id": payment.id,
-                "amount": payment_data.amount,
+                "amount": amount,
             },
         )
 
@@ -1405,115 +1763,102 @@ async def create_payment_order(
             "message": "COD payment recorded successfully",
         }
 
-    elif payment_data.method in [PaymentMethod.UPI, PaymentMethod.CARD]:
-        # For online payments, create Razorpay order
-        if not razorpay_client:
-            raise HTTPException(
-                status_code=500, detail="Payment gateway not configured"
-            )
+    # Online payments (UPI / card) go through Razorpay
+    if not razorpay_client:
+        raise HTTPException(
+            status_code=503, detail="Online payments are not configured. Please use cash (COD)."
+        )
 
-        try:
-            # Create Razorpay order
-            order_data = {
-                "amount": int(payment_data.amount * 100),  # Convert to paise
-                "currency": "INR",
-                "payment_capture": 1,
-                "notes": {
-                    "job_id": payment_data.job_id,
-                    "customer_id": current_user.id,
-                    "worker_id": assignment["worker_id"],
-                },
-            }
+    try:
+        order_data = {
+            "amount": int(round(amount * 100)),  # Convert to paise
+            "currency": "INR",
+            "payment_capture": 1,
+            "notes": {
+                "job_id": payment_data.job_id,
+                "customer_id": current_user.id,
+                "worker_id": assignment["worker_id"],
+            },
+        }
+        razorpay_order = razorpay_client.order.create(order_data)
+    except Exception as e:
+        logger.error(f"Razorpay order creation failed: {e}")
+        raise HTTPException(status_code=502, detail="Failed to create payment order")
 
-            razorpay_order = razorpay_client.order.create(order_data)
+    payment.razorpay_order_id = razorpay_order["id"]
+    await db.payments.insert_one(payment.model_dump())
 
-            # Update payment record with Razorpay order ID
-            payment.razorpay_order_id = razorpay_order["id"]
-            await db.payments.insert_one(payment.model_dump())
-
-            return {
-                "payment_id": payment.id,
-                "razorpay_order_id": razorpay_order["id"],
-                "amount": razorpay_order["amount"],
-                "currency": razorpay_order["currency"],
-                "key_id": RAZORPAY_KEY_ID,
-            }
-
-        except Exception as e:
-            raise HTTPException(
-                status_code=500, detail=f"Failed to create payment order: {str(e)}"
-            )
-
-    else:
-        raise HTTPException(status_code=400, detail="Unsupported payment method")
+    return {
+        "payment_id": payment.id,
+        "razorpay_order_id": razorpay_order["id"],
+        "amount": razorpay_order["amount"],
+        "currency": razorpay_order["currency"],
+        "key_id": RAZORPAY_KEY_ID,
+    }
 
 
 @api_router.post("/payments/verify")
 async def verify_payment(
-    payment_id: str,
-    razorpay_payment_id: str,
-    razorpay_signature: str,
+    verification: PaymentVerify,
     current_user: User = Depends(get_current_user),
 ):
     # Find payment record
-    payment_doc = await db.payments.find_one({"id": payment_id})
-    if not payment_doc:
+    payment_doc = await db.payments.find_one({"id": verification.payment_id})
+    if not payment_doc or payment_doc["payer_id"] != current_user.id:
         raise HTTPException(status_code=404, detail="Payment not found")
 
-    if not razorpay_client:
-        raise HTTPException(status_code=500, detail="Payment gateway not configured")
+    if payment_doc["status"] == PaymentStatus.SUCCEEDED:
+        return {"status": "success", "message": "Payment already verified"}
+
+    if not razorpay_client or not payment_doc.get("razorpay_order_id"):
+        raise HTTPException(status_code=400, detail="Payment cannot be verified")
 
     try:
-        # Verify payment signature
-        params_dict = {
-            "razorpay_order_id": payment_doc["razorpay_order_id"],
-            "razorpay_payment_id": razorpay_payment_id,
-            "razorpay_signature": razorpay_signature,
-        }
-
-        razorpay_client.utility.verify_payment_signature(params_dict)
-
-        # Update payment status
-        await db.payments.update_one(
-            {"id": payment_id},
+        razorpay_client.utility.verify_payment_signature(
             {
-                "$set": {
-                    "status": PaymentStatus.SUCCEEDED,
-                    "razorpay_payment_id": razorpay_payment_id,
-                }
-            },
+                "razorpay_order_id": payment_doc["razorpay_order_id"],
+                "razorpay_payment_id": verification.razorpay_payment_id,
+                "razorpay_signature": verification.razorpay_signature,
+            }
         )
-
-        # Update job status to completed
-        await db.jobs.update_one(
-            {"id": payment_doc["job_id"]}, {"$set": {"status": JobStatus.COMPLETED}}
-        )
-
-        # Notify worker
-        job_doc = await db.jobs.find_one({"id": payment_doc["job_id"]})
-        await create_notification(
-            payment_doc["payee_id"],
-            NotificationType.PAYMENT_RECEIVED,
-            "Payment Received!",
-            f"You have received ₹{payment_doc['amount']} for job '{job_doc['title']}'",
-            {
-                "job_id": payment_doc["job_id"],
-                "payment_id": payment_id,
-                "amount": payment_doc["amount"],
-            },
-        )
-
-        return {"status": "success", "message": "Payment verified successfully"}
-
     except Exception as e:
-        # Update payment status to failed
         await db.payments.update_one(
-            {"id": payment_id}, {"$set": {"status": PaymentStatus.FAILED}}
+            {"id": verification.payment_id}, {"$set": {"status": PaymentStatus.FAILED}}
         )
+        logger.warning(f"Payment signature verification failed: {e}")
+        raise HTTPException(status_code=400, detail="Payment verification failed")
 
-        raise HTTPException(
-            status_code=400, detail=f"Payment verification failed: {str(e)}"
-        )
+    await db.payments.update_one(
+        {"id": verification.payment_id},
+        {
+            "$set": {
+                "status": PaymentStatus.SUCCEEDED,
+                "razorpay_payment_id": verification.razorpay_payment_id,
+            }
+        },
+    )
+
+    # Update job status to completed
+    await db.jobs.update_one(
+        {"id": payment_doc["job_id"], "status": {"$in": PAYABLE_JOB_STATUSES}},
+        {"$set": {"status": JobStatus.COMPLETED}},
+    )
+
+    # Notify worker
+    job_doc = await db.jobs.find_one({"id": payment_doc["job_id"]})
+    await create_notification(
+        payment_doc["payee_id"],
+        NotificationType.PAYMENT_RECEIVED,
+        "Payment Received!",
+        f"You have received ₹{payment_doc['amount']:g} for job '{job_doc['title'] if job_doc else ''}'",
+        {
+            "job_id": payment_doc["job_id"],
+            "payment_id": verification.payment_id,
+            "amount": payment_doc["amount"],
+        },
+    )
+
+    return {"status": "success", "message": "Payment verified successfully"}
 
 
 # =============================================================================
@@ -1554,15 +1899,9 @@ async def get_job_messages(job_id: str, current_user: User = Depends(get_current
     result = []
     for msg in messages:
         chat_msg = ChatMessage(**msg)
-        # Mask phone numbers in messages
+        # New messages are masked when stored; this also covers older, unmasked ones
         if chat_msg.message_type == MessageType.TEXT:
-            # Replace phone numbers with masked versions
-            import re
-
-            phone_pattern = r"\b\d{10,12}\b"
-            chat_msg.content = re.sub(
-                phone_pattern, lambda m: mask_phone_number(m.group()), chat_msg.content
-            )
+            chat_msg.content = mask_phone_numbers(chat_msg.content)
         result.append(chat_msg)
 
     return result
@@ -1590,12 +1929,17 @@ async def send_message(
     else:
         raise HTTPException(status_code=403, detail="Access denied")
 
+    content = message_data.content
+    if message_data.message_type == MessageType.TEXT:
+        # Store the masked text so raw phone numbers never reach the database
+        content = mask_phone_numbers(content)
+
     # Create message
     message = ChatMessage(
         job_id=job_id,
         sender_user_id=current_user.id,
         receiver_user_id=receiver_id,
-        content=message_data.content,
+        content=content,
         message_type=message_data.message_type,
     )
 
@@ -1624,6 +1968,9 @@ async def create_review(
     review_data: ReviewCreate,
     current_user: User = Depends(get_current_user),
 ):
+    if review_data.job_id and review_data.job_id != job_id:
+        raise HTTPException(status_code=400, detail="Job ID mismatch")
+
     # Verify job is completed
     job_doc = await db.jobs.find_one({"id": job_id})
     if not job_doc:
@@ -1637,19 +1984,23 @@ async def create_review(
     if not assignment:
         raise HTTPException(status_code=404, detail="Job assignment not found")
 
-    allowed_users = [job_doc["customer_id"], assignment["worker_id"]]
-    if current_user.id not in allowed_users:
+    # Each party can only review the other party on the same job
+    if current_user.id == job_doc["customer_id"]:
+        reviewee_id = assignment["worker_id"]
+    elif current_user.id == assignment["worker_id"]:
+        reviewee_id = job_doc["customer_id"]
+    else:
         raise HTTPException(status_code=403, detail="Access denied")
+
+    if review_data.reviewee_user_id and review_data.reviewee_user_id != reviewee_id:
+        raise HTTPException(
+            status_code=400, detail="You can only review the other party on this job"
+        )
 
     # Check if already reviewed
     existing_review = await db.reviews.find_one(
-        {
-            "job_id": job_id,
-            "reviewer_user_id": current_user.id,
-            "reviewee_user_id": review_data.reviewee_user_id,
-        }
+        {"job_id": job_id, "reviewer_user_id": current_user.id}
     )
-
     if existing_review:
         raise HTTPException(
             status_code=400, detail="You have already reviewed this job"
@@ -1659,7 +2010,7 @@ async def create_review(
     review = Review(
         job_id=job_id,
         reviewer_user_id=current_user.id,
-        reviewee_user_id=review_data.reviewee_user_id,
+        reviewee_user_id=reviewee_id,
         stars=review_data.stars,
         comment=review_data.comment,
     )
@@ -1668,21 +2019,20 @@ async def create_review(
 
     # Update user's rating
     user_reviews = await db.reviews.find(
-        {"reviewee_user_id": review_data.reviewee_user_id}
+        {"reviewee_user_id": reviewee_id}, {"_id": 0, "stars": 1}
     ).to_list(length=None)
     avg_rating = sum(r["stars"] for r in user_reviews) / len(user_reviews)
 
     await db.users.update_one(
-        {"id": review_data.reviewee_user_id},
+        {"id": reviewee_id},
         {"$set": {"rating_avg": avg_rating, "reviews_count": len(user_reviews)}},
     )
 
-    # Update worker trust score if reviewee is worker
-    if current_user.id == job_doc["customer_id"]:  # Customer reviewing worker
-        # Increase trust score based on rating
+    # Update worker trust score when the customer reviews the worker
+    if current_user.id == job_doc["customer_id"]:
         trust_increase = (review_data.stars - 3) * 2  # -4 to +4 points
         await db.worker_profiles.update_one(
-            {"user_id": review_data.reviewee_user_id},
+            {"user_id": reviewee_id},
             {"$inc": {"trust_score": trust_increase}},
         )
 
@@ -1690,9 +2040,12 @@ async def create_review(
 
 
 @api_router.get("/users/{user_id}/reviews", response_model=List[Review])
-async def get_user_reviews(user_id: str, limit: int = 10, skip: int = 0):
+async def get_user_reviews(
+    user_id: str, limit: int = Query(10, ge=1, le=50), skip: int = Query(0, ge=0)
+):
     reviews = (
         await db.reviews.find({"reviewee_user_id": user_id})
+        .sort("created_at", -1)
         .skip(skip)
         .limit(limit)
         .to_list(length=None)
@@ -1708,8 +2061,8 @@ async def get_user_reviews(user_id: str, limit: int = 10, skip: int = 0):
 @api_router.get("/notifications", response_model=List[Notification])
 async def get_notifications(
     current_user: User = Depends(get_current_user),
-    limit: int = 20,
-    skip: int = 0,
+    limit: int = Query(20, ge=1, le=100),
+    skip: int = Query(0, ge=0),
     unread_only: bool = False,
 ):
     query = {"user_id": current_user.id}
@@ -1726,6 +2079,15 @@ async def get_notifications(
     return [Notification(**notif) for notif in notifications]
 
 
+@api_router.put("/notifications/mark-all-read")
+async def mark_all_notifications_read(current_user: User = Depends(get_current_user)):
+    await db.notifications.update_many(
+        {"user_id": current_user.id, "is_read": False}, {"$set": {"is_read": True}}
+    )
+
+    return {"status": "all_notifications_marked_as_read"}
+
+
 @api_router.put("/notifications/{notification_id}/read")
 async def mark_notification_read(
     notification_id: str, current_user: User = Depends(get_current_user)
@@ -1738,15 +2100,6 @@ async def mark_notification_read(
         raise HTTPException(status_code=404, detail="Notification not found")
 
     return {"status": "marked_as_read"}
-
-
-@api_router.put("/notifications/mark-all-read")
-async def mark_all_notifications_read(current_user: User = Depends(get_current_user)):
-    await db.notifications.update_many(
-        {"user_id": current_user.id, "is_read": False}, {"$set": {"is_read": True}}
-    )
-
-    return {"status": "all_notifications_marked_as_read"}
 
 
 # =============================================================================
@@ -1768,7 +2121,7 @@ async def health_check():
 async def get_config(current_user: User = Depends(get_current_user)):
     """Get frontend configuration"""
     return {
-        "payment_methods": ["cod", "upi", "card"],
+        "payment_methods": ["cod", "upi", "card"] if razorpay_client else ["cod"],
         "razorpay_key_id": RAZORPAY_KEY_ID if razorpay_client else None,
         "maps_enabled": True,  # Placeholder for Google Maps
         "chat_enabled": True,
@@ -1776,26 +2129,35 @@ async def get_config(current_user: User = Depends(get_current_user)):
     }
 
 
-# Include the router
+# =============================================================================
+# ROUTER REGISTRATION
+# =============================================================================
+# All API routers must be registered before the SPA catch-all below: routes match
+# in registration order, so anything added after it would be shadowed.
+
 app.include_router(api_router)
 
+from admin_routes import admin_router  # noqa: E402  (imports names defined above)
+
+app.include_router(admin_router, prefix="/api")
+
+
 # =============================================================================
-# STATIC FILE SERVING (for React frontend)
+# STATIC FILE SERVING (for React frontend) - must stay last
 # =============================================================================
 
-# Check if static directory exists (for production with built frontend)
-STATIC_DIR = Path(__file__).parent / "static"
+STATIC_DIR = (Path(__file__).parent / "static").resolve()
 if STATIC_DIR.exists():
     # Serve React app for all non-API routes
-    @app.get("/{full_path:path}")
+    @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_react_app(full_path: str):
         # Don't serve index.html for API routes
-        if full_path.startswith("api/"):
+        if full_path == "api" or full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
 
-        # Try to serve the requested file (handles static/js/*, static/css/*, etc.)
-        file_path = STATIC_DIR / full_path
-        if file_path.is_file():
+        # Serve real files (static/js/*, static/css/*, ...) but never outside STATIC_DIR
+        file_path = (STATIC_DIR / full_path).resolve()
+        if file_path.is_file() and file_path.is_relative_to(STATIC_DIR):
             return FileResponse(file_path)
 
         # Otherwise serve index.html for client-side routing
@@ -1804,521 +2166,6 @@ if STATIC_DIR.exists():
             return FileResponse(index_path)
 
         raise HTTPException(status_code=404, detail="Not found")
-
-
-# =============================================================================
-# ADMIN ROUTES
-# =============================================================================
-
-
-# Admin role validation
-def require_admin_role():
-    async def role_checker(current_user: User = Depends(get_current_user)):
-        if current_user.role != UserRole.ADMIN:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required"
-            )
-        return current_user
-
-    return role_checker
-
-
-@api_router.get("/admin/dashboard")
-async def get_admin_dashboard(current_user: User = Depends(require_admin_role())):
-    """Get comprehensive admin dashboard statistics"""
-
-    # Get user counts
-    total_users = await db.users.count_documents({})
-    total_customers = await db.users.count_documents({"role": "customer"})
-    total_workers = await db.users.count_documents({"role": "worker"})
-
-    # Get job counts
-    active_jobs = await db.jobs.count_documents(
-        {"status": {"$in": ["open", "assigned", "in_progress"]}}
-    )
-    completed_jobs = await db.jobs.count_documents({"status": "completed"})
-
-    # Get dispute counts (mock data since collection may not exist)
-    pending_disputes = 0
-    pending_kyc = 0
-
-    # Get revenue data
-    today = datetime.now(timezone.utc).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
-    month_start = today.replace(day=1)
-
-    # Calculate revenue (from payments collection)
-    revenue_today = 0.0
-    revenue_month = 0.0
-
-    try:
-        revenue_today_pipeline = [
-            {
-                "$match": {
-                    "created_at": {"$gte": today},
-                    "status": {"$in": ["succeeded", "recorded_cod"]},
-                }
-            },
-            {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
-        ]
-
-        revenue_month_pipeline = [
-            {
-                "$match": {
-                    "created_at": {"$gte": month_start},
-                    "status": {"$in": ["succeeded", "recorded_cod"]},
-                }
-            },
-            {"$group": {"_id": None, "total": {"$sum": "$amount"}}},
-        ]
-
-        revenue_today_result = await db.payments.aggregate(
-            revenue_today_pipeline
-        ).to_list(1)
-        revenue_month_result = await db.payments.aggregate(
-            revenue_month_pipeline
-        ).to_list(1)
-
-        revenue_today = (
-            revenue_today_result[0]["total"] if revenue_today_result else 0.0
-        )
-        revenue_month = (
-            revenue_month_result[0]["total"] if revenue_month_result else 0.0
-        )
-    except Exception as e:
-        logger.warning(f"Revenue calculation failed: {e}")
-
-    # Get top performing workers
-    top_workers = []
-    try:
-        top_workers_pipeline = [
-            {"$match": {"role": "worker"}},
-            {"$sort": {"rating_avg": -1, "reviews_count": -1}},
-            {"$limit": 5},
-            {"$project": {"_id": 0, "name": 1, "rating_avg": 1, "reviews_count": 1}},
-        ]
-
-        top_workers = await db.users.aggregate(top_workers_pipeline).to_list(5)
-    except Exception as e:
-        logger.warning(f"Top workers calculation failed: {e}")
-
-    # Get recent activities (mock data)
-    recent_activities = [
-        {
-            "type": "job_posted",
-            "description": "New plumbing job posted",
-            "time": "2 hours ago",
-        },
-        {
-            "type": "worker_joined",
-            "description": "New worker registered",
-            "time": "4 hours ago",
-        },
-        {
-            "type": "payment_completed",
-            "description": f"Payment of ₹{revenue_today} completed",
-            "time": "6 hours ago",
-        },
-    ]
-
-    return {
-        "total_users": total_users,
-        "total_customers": total_customers,
-        "total_workers": total_workers,
-        "active_jobs": active_jobs,
-        "completed_jobs": completed_jobs,
-        "pending_disputes": pending_disputes,
-        "pending_kyc": pending_kyc,
-        "total_revenue_today": revenue_today,
-        "total_revenue_month": revenue_month,
-        "top_performing_workers": top_workers,
-        "recent_activities": recent_activities,
-    }
-
-
-@api_router.get("/admin/users")
-async def get_all_users(
-    role: Optional[str] = None,
-    status: Optional[str] = None,
-    search: Optional[str] = None,
-    limit: int = Query(20, le=100),
-    skip: int = 0,
-    current_user: User = Depends(require_admin_role()),
-):
-    """Get all users with filtering and search"""
-    filter_dict = {}
-
-    if role:
-        filter_dict["role"] = role
-
-    if search:
-        filter_dict["$or"] = [
-            {"name": {"$regex": search, "$options": "i"}},
-            {"phone": {"$regex": search, "$options": "i"}},
-            {"email": {"$regex": search, "$options": "i"}},
-        ]
-
-    users = await db.users.find(filter_dict).skip(skip).limit(limit).to_list(limit)
-    return [
-        User(**{k: v for k, v in user.items() if k != "password_hash"})
-        for user in users
-    ]
-
-
-@api_router.get("/admin/users/{user_id}/activity")
-async def get_user_activity(
-    user_id: str, current_user: User = Depends(require_admin_role())
-):
-    """Get user activity timeline"""
-
-    # Get user info
-    user = await db.users.find_one({"id": user_id})
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
-    # Get user's jobs
-    jobs = []
-    if user["role"] == "customer":
-        jobs = (
-            await db.jobs.find({"customer_id": user_id})
-            .sort("created_at", -1)
-            .limit(10)
-            .to_list(10)
-        )
-
-    # Get applications/bids
-    applications = (
-        await db.applications.find({"worker_id": user_id})
-        .sort("created_at", -1)
-        .limit(10)
-        .to_list(10)
-    )
-    bids = (
-        await db.bids.find({"worker_id": user_id})
-        .sort("created_at", -1)
-        .limit(10)
-        .to_list(10)
-    )
-
-    # Get payments
-    payments = (
-        await db.payments.find({"$or": [{"payer_id": user_id}, {"payee_id": user_id}]})
-        .sort("created_at", -1)
-        .limit(10)
-        .to_list(10)
-    )
-
-    # Get reviews
-    reviews_given = (
-        await db.reviews.find({"reviewer_user_id": user_id})
-        .sort("created_at", -1)
-        .limit(5)
-        .to_list(5)
-    )
-    reviews_received = (
-        await db.reviews.find({"reviewee_user_id": user_id})
-        .sort("created_at", -1)
-        .limit(5)
-        .to_list(5)
-    )
-
-    return {
-        "user": {k: v for k, v in user.items() if k not in ["password_hash", "_id"]},
-        "jobs_posted": len(jobs) if user["role"] == "customer" else 0,
-        "applications_sent": len(applications),
-        "bids_placed": len(bids),
-        "payments_made": len([p for p in payments if p["payer_id"] == user_id]),
-        "payments_received": len([p for p in payments if p["payee_id"] == user_id]),
-        "reviews_given": len(reviews_given),
-        "reviews_received": len(reviews_received),
-        "recent_jobs": [
-            {k: v for k, v in job.items() if k != "_id"} for job in jobs[:5]
-        ],
-        "recent_applications": [
-            {k: v for k, v in app.items() if k != "_id"} for app in applications[:5]
-        ],
-        "recent_reviews": [
-            {k: v for k, v in review.items() if k != "_id"}
-            for review in reviews_received[:5]
-        ],
-    }
-
-
-@api_router.post("/admin/users/{user_id}/strike")
-async def issue_user_strike(
-    user_id: str, strike_data: dict, current_user: User = Depends(require_admin_role())
-):
-    """Issue a strike/warning to a user"""
-
-    # Create strike record (simplified)
-    strike = {
-        "id": str(uuid.uuid4()),
-        "user_id": user_id,
-        "reason": strike_data["reason"],
-        "description": strike_data["description"],
-        "severity": strike_data.get("severity", "medium"),
-        "issued_by": current_user.id,
-        "issued_at": datetime.now(timezone.utc),
-        "is_active": True,
-    }
-
-    # Insert strike (create collection if doesn't exist)
-    await db.user_strikes.insert_one(strike)
-
-    # Count strikes
-    strike_count = await db.user_strikes.count_documents(
-        {"user_id": user_id, "is_active": True}
-    )
-
-    return {"message": "Strike issued successfully", "total_strikes": strike_count}
-
-
-@api_router.get("/admin/kyc/pending")
-async def get_pending_kyc(
-    limit: int = 20, skip: int = 0, current_user: User = Depends(require_admin_role())
-):
-    """Get all pending KYC verifications"""
-
-    # Return empty list for now (KYC system not fully implemented)
-    return []
-
-
-@api_router.get("/admin/jobs/moderation")
-async def get_jobs_for_moderation(
-    status: str = "pending",
-    limit: int = 20,
-    skip: int = 0,
-    current_user: User = Depends(require_admin_role()),
-):
-    """Get jobs that need content moderation"""
-
-    # Return empty list for now (moderation system not fully implemented)
-    return []
-
-
-@api_router.get("/admin/disputes")
-async def get_disputes(
-    status: Optional[str] = None,
-    severity: Optional[str] = None,
-    assigned_to: Optional[str] = None,
-    limit: int = 20,
-    skip: int = 0,
-    current_user: User = Depends(require_admin_role()),
-):
-    """Get disputes with filtering"""
-
-    # Return empty list for now (dispute system not fully implemented)
-    return []
-
-
-@api_router.get("/admin/analytics/revenue")
-async def get_revenue_analytics(
-    period: str = "month", current_user: User = Depends(require_admin_role())
-):
-    """Get revenue analytics for different time periods"""
-
-    now = datetime.now(timezone.utc)
-
-    if period == "day":
-        start_date = now - timedelta(days=30)
-        group_by = {"$dateToString": {"format": "%Y-%m-%d", "date": "$created_at"}}
-    elif period == "week":
-        start_date = now - timedelta(weeks=12)
-        group_by = {"$dateToString": {"format": "%Y-W%V", "date": "$created_at"}}
-    elif period == "month":
-        start_date = now - timedelta(days=365)
-        group_by = {"$dateToString": {"format": "%Y-%m", "date": "$created_at"}}
-    else:  # year
-        start_date = now - timedelta(days=365 * 3)
-        group_by = {"$dateToString": {"format": "%Y", "date": "$created_at"}}
-
-    try:
-        pipeline = [
-            {
-                "$match": {
-                    "created_at": {"$gte": start_date},
-                    "status": {"$in": ["succeeded", "recorded_cod"]},
-                }
-            },
-            {
-                "$group": {
-                    "_id": group_by,
-                    "total_revenue": {"$sum": "$amount"},
-                    "transaction_count": {"$sum": 1},
-                }
-            },
-            {"$sort": {"_id": 1}},
-        ]
-
-        results = await db.payments.aggregate(pipeline).to_list(100)
-
-        return {
-            "period": period,
-            "data": results,
-            "total_revenue": sum(r["total_revenue"] for r in results),
-            "total_transactions": sum(r["transaction_count"] for r in results),
-        }
-    except Exception as e:
-        logger.warning(f"Revenue analytics failed: {e}")
-        return {
-            "period": period,
-            "data": [],
-            "total_revenue": 0,
-            "total_transactions": 0,
-        }
-
-
-@api_router.get("/admin/analytics/jobs")
-async def get_job_analytics(current_user: User = Depends(require_admin_role())):
-    """Get job-related analytics"""
-
-    # Job completion rates
-    total_jobs = await db.jobs.count_documents({})
-    completed_jobs = await db.jobs.count_documents({"status": "completed"})
-    completion_rate = (completed_jobs / total_jobs * 100) if total_jobs > 0 else 0
-
-    # Average job values by category
-    try:
-        category_pipeline = [
-            {
-                "$group": {
-                    "_id": "$category",
-                    "avg_amount": {"$avg": "$budget_amount"},
-                    "job_count": {"$sum": 1},
-                }
-            },
-            {"$sort": {"job_count": -1}},
-        ]
-
-        category_stats = await db.jobs.aggregate(category_pipeline).to_list(100)
-    except Exception as e:
-        logger.warning(f"Category stats failed: {e}")
-        category_stats = []
-
-    # Jobs by status
-    try:
-        status_pipeline = [{"$group": {"_id": "$status", "count": {"$sum": 1}}}]
-
-        status_stats = await db.jobs.aggregate(status_pipeline).to_list(100)
-    except Exception as e:
-        logger.warning(f"Status stats failed: {e}")
-        status_stats = []
-
-    return {
-        "total_jobs": total_jobs,
-        "completed_jobs": completed_jobs,
-        "completion_rate": round(completion_rate, 2),
-        "category_stats": category_stats,
-        "status_distribution": status_stats,
-    }
-
-
-@api_router.get("/admin/config")
-async def get_platform_config(
-    category: Optional[str] = None, current_user: User = Depends(require_admin_role())
-):
-    """Get platform configuration"""
-
-    # Return mock configuration data
-    configs = [
-        {
-            "key": "max_job_budget",
-            "value": 100000,
-            "category": "job",
-            "description": "Maximum job budget allowed",
-        },
-        {
-            "key": "commission_rate",
-            "value": 0.05,
-            "category": "payment",
-            "description": "Platform commission rate",
-        },
-        {
-            "key": "auto_assign_timeout",
-            "value": 24,
-            "category": "job",
-            "description": "Hours before auto-assignment",
-        },
-    ]
-
-    if category:
-        configs = [c for c in configs if c["category"] == category]
-
-    return configs
-
-
-@api_router.post("/admin/announcements")
-async def create_announcement(
-    announcement_data: dict, current_user: User = Depends(require_admin_role())
-):
-    """Create platform-wide announcement"""
-
-    announcement = {
-        "id": str(uuid.uuid4()),
-        "title": announcement_data["title"],
-        "message": announcement_data["message"],
-        "target_audience": announcement_data.get("target_audience", "all"),
-        "target_user_ids": announcement_data.get("target_user_ids", []),
-        "announcement_type": announcement_data.get("type", "info"),
-        "priority": announcement_data.get("priority", "normal"),
-        "start_date": datetime.fromisoformat(announcement_data["start_date"]),
-        "end_date": (
-            datetime.fromisoformat(announcement_data["end_date"])
-            if announcement_data.get("end_date")
-            else None
-        ),
-        "created_by": current_user.id,
-        "created_at": datetime.now(timezone.utc),
-    }
-
-    # Insert announcement
-    await db.announcements.insert_one(announcement)
-
-    # Get target users
-    target_users = []
-    if announcement["target_audience"] == "all":
-        target_users = await db.users.find({}, {"id": 1}).to_list(1000)
-    elif announcement["target_audience"] in ["customers", "workers"]:
-        target_users = await db.users.find(
-            {"role": announcement["target_audience"][:-1]}, {"id": 1}
-        ).to_list(1000)
-    elif announcement["target_user_ids"]:
-        target_users = [{"id": uid} for uid in announcement["target_user_ids"]]
-
-    # Create notifications (batch insert)
-    notifications = []
-    for user in target_users:
-        notification = {
-            "id": str(uuid.uuid4()),
-            "user_id": user["id"],
-            "type": "announcement",
-            "title": announcement["title"],
-            "message": announcement["message"],
-            "data": {"announcement_id": announcement["id"]},
-            "is_read": False,
-            "created_at": datetime.now(timezone.utc),
-        }
-        notifications.append(notification)
-
-    if notifications:
-        await db.notifications.insert_many(notifications)
-
-    return {
-        "message": "Announcement created successfully",
-        "notification_count": len(notifications),
-    }
-
-
-# Include admin routes
-try:
-    from admin_routes import admin_router
-
-    app.include_router(admin_router, prefix="/api")
-    print("✅ Admin routes loaded successfully")
-except ImportError as e:
-    print(f"⚠️ Admin routes not available: {e}")
-    pass
 
 
 @app.on_event("shutdown")

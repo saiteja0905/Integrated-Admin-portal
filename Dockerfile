@@ -43,8 +43,9 @@ COPY backend/ ./
 # Copy built frontend from previous stage
 COPY --from=frontend-builder /app/frontend/build ./static
 
-# Create non-root user
-RUN useradd --create-home --shell /bin/bash app && \
+# Create non-root user (and the uploads dir it owns, so a mounted volume is writable)
+RUN mkdir -p /app/uploads && \
+    useradd --create-home --shell /bin/bash app && \
     chown -R app:app /app
 
 USER app

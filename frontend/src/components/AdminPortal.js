@@ -35,9 +35,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { API, getErrorMessage } from '../lib/api';
 
 // Main Admin Dashboard Component
 export const AdminDashboard = () => {
@@ -226,6 +224,8 @@ export const AdminUserManagement = () => {
   const [selectedUser, setSelectedUser] = useState(null);
   const [showStrikeModal, setShowStrikeModal] = useState(false);
   const [strikeDesc, setStrikeDesc] = useState('');
+  const [showDetailsModal, setShowDetailsModal] = useState(false);
+  const [userActivity, setUserActivity] = useState(null);
 
   useEffect(() => {
     fetchUsers();
@@ -250,23 +250,39 @@ export const AdminUserManagement = () => {
 
   const handleUserAction = async (userId, action, data = {}) => {
     try {
+      let response;
       switch (action) {
         case 'suspend':
-          await axios.put(`${API}/admin/users/${userId}/suspend`, data);
-          toast.success('User suspended successfully');
+          response = await axios.put(`${API}/admin/users/${userId}/suspend`, data);
           break;
         case 'strike':
-          await axios.post(`${API}/admin/users/${userId}/strike`, data);
-          toast.success('Strike issued successfully');
+          response = await axios.post(`${API}/admin/users/${userId}/strike`, data);
           break;
         case 'verify':
-          await axios.put(`${API}/admin/users/${userId}/verify`, data);
-          toast.success('User verified successfully');
+          response = await axios.put(`${API}/admin/users/${userId}/verify`, data);
           break;
+        default:
+          return;
+      }
+      toast.success(response.data?.message || 'Action completed');
+      if (action === 'strike' && response.data?.suspended) {
+        toast.warning('This user reached the strike limit and has been suspended');
       }
       fetchUsers();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Action failed');
+      toast.error(getErrorMessage(error, 'Action failed'));
+    }
+  };
+
+  const openUserDetails = async (user) => {
+    setSelectedUser(user);
+    setUserActivity(null);
+    setShowDetailsModal(true);
+    try {
+      const response = await axios.get(`${API}/admin/users/${user.id}/activity`);
+      setUserActivity(response.data);
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to load user activity'));
     }
   };
 
@@ -379,9 +395,18 @@ export const AdminUserManagement = () => {
                     </span>
                   </td>
                   <td className="px-6 py-4">
-                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
-                      Active
-                    </span>
+                    <div className="flex flex-col gap-1 items-start">
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        user.status === 'suspended' ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'
+                      }`}>
+                        {user.status === 'suspended' ? 'Suspended' : 'Active'}
+                      </span>
+                      {user.kyc_verified && (
+                        <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                          Verified
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="px-6 py-4">
                     <div className="flex items-center">
@@ -396,12 +421,36 @@ export const AdminUserManagement = () => {
                   <td className="px-6 py-4">
                     <div className="flex items-center space-x-2">
                       <button
-                        onClick={() => setSelectedUser(user)}
+                        onClick={() => openUserDetails(user)}
                         className="text-blue-600 hover:text-blue-700"
                         title="View Details"
                       >
                         <Eye className="w-4 h-4" />
                       </button>
+                      {user.role !== 'admin' && (
+                        <>
+                          <button
+                            onClick={() => handleUserAction(user.id, 'verify', { verified: !user.kyc_verified })}
+                            className={user.kyc_verified ? 'text-gray-400 hover:text-gray-600' : 'text-green-600 hover:text-green-700'}
+                            title={user.kyc_verified ? 'Remove Verification' : 'Verify User'}
+                          >
+                            <UserCheck className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              const suspend = user.status !== 'suspended';
+                              if (suspend && !window.confirm(`Suspend ${user.name}? They will be logged out and unable to sign in.`)) {
+                                return;
+                              }
+                              handleUserAction(user.id, 'suspend', { suspend });
+                            }}
+                            className={user.status === 'suspended' ? 'text-green-600 hover:text-green-700' : 'text-orange-600 hover:text-orange-700'}
+                            title={user.status === 'suspended' ? 'Reactivate User' : 'Suspend User'}
+                          >
+                            {user.status === 'suspended' ? <CheckCircle className="w-4 h-4" /> : <XCircle className="w-4 h-4" />}
+                          </button>
+                        </>
+                      )}
                       <button 
                         onClick={() => { setSelectedUser(user); setShowStrikeModal(true); }}
                         className="text-red-600 hover:text-red-700"
@@ -438,11 +487,49 @@ export const AdminUserManagement = () => {
                   setShowStrikeModal(false);
                   setStrikeDesc('');
                 }} 
-                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700"
+                disabled={!strikeDesc.trim()}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
               >
                 Confirm Strike
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {showDetailsModal && selectedUser && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full">
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h3 className="text-xl font-bold">{selectedUser.name}</h3>
+                <p className="text-sm text-gray-500 capitalize">{selectedUser.role} · {selectedUser.phone}</p>
+              </div>
+              <button onClick={() => setShowDetailsModal(false)} className="text-gray-400 hover:text-gray-600">
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+            {userActivity ? (
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                {[
+                  ['Status', userActivity.user?.status === 'suspended' ? 'Suspended' : 'Active'],
+                  ['Active strikes', userActivity.active_strikes],
+                  ['Jobs posted', userActivity.jobs_posted],
+                  ['Applications', userActivity.applications_sent],
+                  ['Bids placed', userActivity.bids_placed],
+                  ['Payments made', userActivity.payments_made],
+                  ['Payments received', userActivity.payments_received],
+                  ['Reviews received', userActivity.reviews_received]
+                ].map(([label, value]) => (
+                  <div key={label} className="bg-gray-50 rounded-lg p-3">
+                    <p className="text-gray-500 text-xs">{label}</p>
+                    <p className="font-semibold text-gray-900">{value}</p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-8 text-center text-gray-500">Loading activity...</div>
+            )}
           </div>
         </div>
       )}

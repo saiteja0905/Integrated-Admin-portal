@@ -1,19 +1,19 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
 import { AdminLogin } from './components/AdminLogin';
-import { 
-  AdminDashboard as AdminDashboardComponent, 
-  AdminUserManagement as AdminUserManagementComponent, 
-  AdminDisputeManagement as AdminDisputeManagementComponent, 
-  AdminAnalytics as AdminAnalyticsComponent 
+import {
+  AdminDashboard as AdminDashboardComponent,
+  AdminUserManagement as AdminUserManagementComponent,
+  AdminDisputeManagement as AdminDisputeManagementComponent,
+  AdminAnalytics as AdminAnalyticsComponent
 } from './components/AdminPortal';
 import axios from 'axios';
 import { Toaster } from './components/ui/sonner';
 import { MessagingHub } from './components/MessagingHub';
+import { NotificationBell } from './components/NotificationSystem';
+import { PaymentModal } from './components/PaymentModal';
 import { toast } from 'sonner';
-
-// Import Admin Portal Components
-import { AdminDashboard, AdminUserManagement, AdminDisputeManagement, AdminAnalytics } from './components/AdminPortal';
+import { API, getErrorMessage, assetUrl } from './lib/api';
 
 // Import Lucide icons
 import { 
@@ -76,9 +76,6 @@ import {
 
 import './App.css';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
 // Auth Context
 const AuthContext = React.createContext();
 
@@ -86,46 +83,86 @@ const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState(false);
+
+  const logout = useCallback(() => {
+    setToken(null);
+    setUser(null);
+    setAuthError(false);
+    localStorage.removeItem('token');
+    delete axios.defaults.headers.common['Authorization'];
+  }, []);
+
+  // End the session when the API rejects the token (expired, invalid, or account
+  // suspended) instead of leaving the user on screens where every request fails.
+  useEffect(() => {
+    const interceptorId = axios.interceptors.response.use(
+      (response) => response,
+      (error) => {
+        const statusCode = error.response?.status;
+        const url = error.config?.url || '';
+        const isAuthAttempt = url.endsWith('/auth/login') || url.endsWith('/auth/register');
+        const detail = error.response?.data?.detail;
+        const isSuspended = statusCode === 403 && typeof detail === 'string' && detail.includes('suspended');
+
+        if (!isAuthAttempt && (statusCode === 401 || isSuspended) && localStorage.getItem('token')) {
+          logout();
+          toast.error(isSuspended ? detail : 'Your session has expired. Please log in again.');
+        }
+        return Promise.reject(error);
+      }
+    );
+    return () => axios.interceptors.response.eject(interceptorId);
+  }, [logout]);
+
+  const fetchUserInfo = useCallback(async () => {
+    setAuthError(false);
+    try {
+      const response = await axios.get(`${API}/auth/me`);
+      setUser(response.data);
+    } catch (error) {
+      const statusCode = error.response?.status;
+      if (statusCode === 401 || statusCode === 403) {
+        logout();
+      } else {
+        // Server unreachable or failing: keep the token so a brief outage doesn't log the user out
+        console.error('Failed to fetch user info:', error);
+        setAuthError(true);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [logout]);
 
   useEffect(() => {
     if (token) {
       // Set axios default header
       axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-      // Fetch user info
-      fetchUserInfo();
+      // Fetch user info unless login() already provided it
+      if (!user) {
+        fetchUserInfo();
+      } else {
+        setLoading(false);
+      }
     } else {
       setLoading(false);
     }
   }, [token]);
 
-  const fetchUserInfo = async () => {
-    try {
-      const response = await axios.get(`${API}/auth/me`);
-      setUser(response.data);
-    } catch (error) {
-      console.error('Failed to fetch user info:', error);
-      logout();
-    } finally {
-      setLoading(false);
-    }
+  const retryAuth = () => {
+    setLoading(true);
+    fetchUserInfo();
   };
 
   const login = (tokenData) => {
-    setToken(tokenData.access_token);
-    setUser(tokenData.user);
     localStorage.setItem('token', tokenData.access_token);
     axios.defaults.headers.common['Authorization'] = `Bearer ${tokenData.access_token}`;
-  };
-
-  const logout = () => {
-    setToken(null);
-    setUser(null);
-    localStorage.removeItem('token');
-    delete axios.defaults.headers.common['Authorization'];
+    setUser(tokenData.user);
+    setToken(tokenData.access_token);
   };
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, loading }}>
+    <AuthContext.Provider value={{ user, token, login, logout, loading, authError, retryAuth }}>
       {children}
     </AuthContext.Provider>
   );
@@ -162,9 +199,7 @@ const Header = ({ onMenuClick }) => {
           </div>
 
           <div className="flex items-center space-x-4">
-            <button className="p-2 rounded-md text-gray-600 hover:text-gray-900 hover:bg-gray-100">
-              <Bell className="w-5 h-5" />
-            </button>
+            <NotificationBell />
             
             <div className="relative">
               <button
@@ -226,8 +261,7 @@ const Sidebar = ({ isOpen, onClose, activeRoute, setActiveRoute }) => {
       { name: 'Dashboard', icon: Home, route: 'admin/dashboard' },
       { name: 'User Management', icon: Users, route: 'admin/users' },
       { name: 'Dispute Management', icon: Settings, route: 'admin/disputes' },
-      { name: 'Analytics', icon: TrendingUp, route: 'admin/analytics' },
-      { name: 'Jobs', icon: Briefcase, route: 'admin/jobs' }
+      { name: 'Analytics', icon: TrendingUp, route: 'admin/analytics' }
     ]
   };
 
@@ -300,7 +334,8 @@ const WorkerProfile = () => {
     skills: [],
     experience_years: 0,
     certifications: [],
-    preferred_locations: []
+    preferred_locations: [],
+    service_radius_km: 10
   });
 
   useEffect(() => {
@@ -315,7 +350,8 @@ const WorkerProfile = () => {
         skills: response.data.skills || [],
         experience_years: response.data.experience_years || 0,
         certifications: response.data.certifications || [],
-        preferred_locations: response.data.preferred_locations || []
+        preferred_locations: response.data.preferred_locations || [],
+        service_radius_km: response.data.service_radius_km || 10
       });
     } catch (error) {
       toast.error('Failed to fetch profile');
@@ -331,7 +367,7 @@ const WorkerProfile = () => {
       setIsEditing(false);
       toast.success('Profile updated successfully!');
     } catch (error) {
-      toast.error('Failed to update profile');
+      toast.error(getErrorMessage(error, 'Failed to update profile'));
     }
   };
 
@@ -402,6 +438,18 @@ const WorkerProfile = () => {
                   type="number"
                   value={formData.experience_years}
                   onChange={(e) => setFormData(prev => ({ ...prev, experience_years: parseInt(e.target.value) || 0 }))}
+                  disabled={!isEditing}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-orange-500 focus:border-orange-500"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Service Radius (km)</label>
+                <input
+                  type="number"
+                  min="1"
+                  max="200"
+                  value={formData.service_radius_km}
+                  onChange={(e) => setFormData(prev => ({ ...prev, service_radius_km: parseInt(e.target.value) || 1 }))}
                   disabled={!isEditing}
                   className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-orange-500 focus:border-orange-500"
                 />
@@ -509,7 +557,7 @@ const BiddingModal = ({ job, isOpen, onClose, onSuccess }) => {
       onSuccess();
       onClose();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to submit bid');
+      toast.error(getErrorMessage(error, 'Failed to submit bid'));
     } finally {
       setLoading(false);
     }
@@ -728,6 +776,9 @@ const JobDetails = () => {
   const [loading, setLoading] = useState(true);
   const [selectedTab, setSelectedTab] = useState('details');
   const [showReviewModal, setShowReviewModal] = useState(false);
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [reviewSubmitted, setReviewSubmitted] = useState(false);
+  const [participants, setParticipants] = useState(null);
 
   useEffect(() => {
     if (jobId) {
@@ -739,18 +790,35 @@ const JobDetails = () => {
     try {
       setLoading(true);
       const jobRes = await axios.get(`${API}/jobs/${jobId}`);
-      setJob(jobRes.data);
-      
-      if (jobRes.data.type === 'daily') {
-        const appRes = await axios.get(`${API}/jobs/${jobId}/applications`);
-        setApplications(appRes.data);
+      const jobData = jobRes.data;
+      setJob(jobData);
+
+      // Only the job owner (or an admin) may see who applied or bid
+      const canSeeOffers = user?.role === 'admin' || user?.id === jobData.customer_id;
+      if (canSeeOffers) {
+        if (jobData.type === 'daily') {
+          const appRes = await axios.get(`${API}/jobs/${jobId}/applications`);
+          setApplications(appRes.data);
+        } else {
+          const bidRes = await axios.get(`${API}/jobs/${jobId}/bids`);
+          setBids(bidRes.data);
+        }
+      }
+
+      // Once someone is hired, load the customer/worker pair (visible to those two only)
+      if (!['draft', 'open'].includes(jobData.status)) {
+        try {
+          const participantsRes = await axios.get(`${API}/jobs/${jobId}/participants`);
+          setParticipants(participantsRes.data);
+        } catch {
+          setParticipants(null);
+        }
       } else {
-        const bidRes = await axios.get(`${API}/jobs/${jobId}/bids`);
-        setBids(bidRes.data);
+        setParticipants(null);
       }
     } catch (error) {
       console.error(error);
-      toast.error('Failed to load job details');
+      toast.error(getErrorMessage(error, 'Failed to load job details'));
     } finally {
       setLoading(false);
     }
@@ -764,31 +832,22 @@ const JobDetails = () => {
       toast.success('Worker assigned successfully!');
       fetchJobDetails();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Assignment failed');
+      toast.error(getErrorMessage(error, 'Assignment failed'));
     }
   };
 
   const handleSubmitReview = async (reviewData) => {
     try {
-      let workerId = '';
-      if (job.type === 'daily') {
-        const acceptedApp = applications.find(a => a.status === 'accepted');
-        workerId = acceptedApp?.worker_id;
-      } else {
-        const acceptedBid = bids.find(b => b.status === 'accepted');
-        workerId = acceptedBid?.worker_id;
-      }
-
+      // The server works out who is being reviewed from the job's assignment
       await axios.post(`${API}/jobs/${jobId}/review`, {
         stars: reviewData.stars,
-        comment: reviewData.comment,
-        job_id: jobId,
-        reviewee_user_id: workerId
+        comment: reviewData.comment
       });
+      setReviewSubmitted(true);
       toast.success('Review submitted! Thank you for your feedback.');
       fetchJobDetails();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to submit review');
+      toast.error(getErrorMessage(error, 'Failed to submit review'));
     }
   };
 
@@ -806,10 +865,11 @@ const JobDetails = () => {
   );
 
   const isCustomer = user?.role === 'customer' && user?.id === job.customer_id;
-  const isAssignedWorker = user?.role === 'worker' && (
-    applications.some(a => a.worker_id === user.id && a.status === 'accepted') ||
-    bids.some(b => b.worker_id === user.id && b.status === 'accepted')
-  );
+  const isAssignedWorker = user?.role === 'worker' && participants?.worker?.id === user.id;
+  const canSeeOffers = isCustomer || user?.role === 'admin';
+  const isHired = ['assigned', 'in_progress'].includes(job.status);
+  const agreedAmount = participants?.assignment?.final_amount;
+  const hiredWorkerName = participants?.worker?.name || 'the worker';
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
@@ -846,8 +906,38 @@ const JobDetails = () => {
             </div>
           </div>
           
+          {/* Hired: the customer completes & pays; both parties can message each other */}
+          {isHired && (isCustomer || isAssignedWorker) && (
+            <div className="px-6 py-4 bg-blue-50 border-t border-blue-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <p className="text-sm text-blue-800 font-medium">
+                {isCustomer
+                  ? `${hiredWorkerName} is hired${agreedAmount ? ` for ₹${agreedAmount.toLocaleString()}` : ''}. Mark the job complete once the work is done.`
+                  : `You have been hired for this job${agreedAmount ? ` for ₹${agreedAmount.toLocaleString()}` : ''}.`}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => navigate('/messages', { state: { jobId: job.id } })}
+                  className="flex items-center px-4 py-2 border border-blue-200 text-blue-700 bg-white rounded-lg hover:bg-blue-50"
+                >
+                  <MessageCircle className="w-4 h-4 mr-2" />
+                  Message
+                </button>
+                {isCustomer && (
+                  <button
+                    onClick={() => setShowPaymentModal(true)}
+                    disabled={!agreedAmount}
+                    className="flex items-center px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 shadow-sm disabled:opacity-50"
+                  >
+                    <CheckCircle className="w-4 h-4 mr-2" />
+                    Complete & Pay
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Action Footer for Customer */}
-          {isCustomer && job.status === 'completed' && (
+          {isCustomer && job.status === 'completed' && !reviewSubmitted && (
             <div className="px-6 py-4 bg-orange-50 border-t border-orange-100 flex items-center justify-between">
               <p className="text-sm text-orange-800 font-medium">Job has been completed and payment settled.</p>
               <button
@@ -867,7 +957,9 @@ const JobDetails = () => {
             <nav className="flex px-4" aria-label="Tabs">
               {[
                 { id: 'details', name: 'Details', icon: FileText },
-                { id: 'applicants', name: job.type === 'daily' ? `Applicants (${applications.length})` : `Bids (${bids.length})`, icon: Users }
+                ...(canSeeOffers
+                  ? [{ id: 'applicants', name: job.type === 'daily' ? `Applicants (${applications.length})` : `Bids (${bids.length})`, icon: Users }]
+                  : [])
               ].map((tab) => (
                 <button
                   key={tab.id}
@@ -903,7 +995,7 @@ const JobDetails = () => {
                       {job.photos.map((photo, idx) => (
                         <div key={idx} className="aspect-square rounded-xl overflow-hidden border border-gray-100 group cursor-pointer relative shadow-sm">
                           <img 
-                            src={photo.startsWith('http') ? photo : `${BACKEND_URL}${photo}`} 
+                            src={assetUrl(photo)} 
                             alt={`Job work ${idx + 1}`}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                           />
@@ -971,7 +1063,15 @@ const JobDetails = () => {
         isOpen={showReviewModal} 
         onClose={() => setShowReviewModal(false)} 
         onSubmit={handleSubmitReview}
-        workerName={job.type === 'daily' ? applications.find(a => a.status === 'accepted')?.worker_info?.name : bids.find(b => b.status === 'accepted')?.worker_info?.name}
+        workerName={hiredWorkerName}
+      />
+
+      <PaymentModal
+        isOpen={showPaymentModal}
+        onClose={() => setShowPaymentModal(false)}
+        job={job}
+        amount={agreedAmount}
+        onSuccess={fetchJobDetails}
       />
     </div>
   );
@@ -990,7 +1090,7 @@ const MyJobs = () => {
 
   const fetchJobs = async () => {
     try {
-      const response = await axios.get(`${API}/jobs`);
+      const response = await axios.get(`${API}/jobs`, { params: { mine: true, limit: 100 } });
       setJobs(response.data);
     } catch (error) {
       toast.error('Failed to fetch jobs');
@@ -1213,7 +1313,7 @@ const PostJobForm = () => {
         toast.success('Images uploaded successfully');
       }
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to upload images');
+      toast.error(getErrorMessage(error, 'Failed to upload images'));
     } finally {
       setUploadingImage(false);
       if (fileInputRef.current) {
@@ -1281,7 +1381,7 @@ const PostJobForm = () => {
       toast.success('Job posted successfully!');
       navigate('/my-jobs');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to post job');
+      toast.error(getErrorMessage(error, 'Failed to post job'));
     } finally {
       setLoading(false);
     }
@@ -1448,7 +1548,7 @@ const PostJobForm = () => {
           <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
             {jobData.photos.map((url, idx) => (
               <div key={idx} className="relative group rounded-lg overflow-hidden border border-gray-200">
-                <img src={`${BACKEND_URL}${url}`} alt={`Preview ${idx + 1}`} className="w-full h-24 object-cover" />
+                <img src={assetUrl(url)} alt={`Preview ${idx + 1}`} className="w-full h-24 object-cover" />
                 <button
                   type="button"
                   onClick={(e) => { e.stopPropagation(); removePhoto(idx); }}
@@ -1614,9 +1714,14 @@ const PostJobForm = () => {
 };
 
 // Find Jobs Component (Worker View) - Enhanced with bidding
+const JOBS_PAGE_SIZE = 20;
+
 const FindJobs = () => {
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [biddingJob, setBiddingJob] = useState(null);
   const [filters, setFilters] = useState({
     type: '',
@@ -1629,40 +1734,31 @@ const FindJobs = () => {
     fetchJobs();
   }, [filters]);
 
-  const fetchJobs = async () => {
+  // Search, sorting and paging happen on the server so every open job is reachable
+  const fetchJobs = async ({ append = false } = {}) => {
     try {
-      setLoading(true);
+      if (append) {
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
+      }
       const params = new URLSearchParams();
       if (filters.type) params.append('type', filters.type);
       if (filters.category) params.append('category', filters.category);
+      if (filters.search.trim()) params.append('search', filters.search.trim());
       params.append('status', 'open');
+      params.append('sort', filters.sortBy);
+      params.append('limit', JOBS_PAGE_SIZE);
+      params.append('skip', append ? jobs.length : 0);
 
       const response = await axios.get(`${API}/jobs?${params.toString()}`);
-      let jobsData = response.data;
-
-      // Apply search filter
-      if (filters.search) {
-        const searchTerm = filters.search.toLowerCase();
-        jobsData = jobsData.filter(job => 
-          job.title.toLowerCase().includes(searchTerm) ||
-          job.description.toLowerCase().includes(searchTerm)
-        );
-      }
-
-      // Apply sorting
-      if (filters.sortBy === 'budget_high') {
-        jobsData.sort((a, b) => b.budget_amount - a.budget_amount);
-      } else if (filters.sortBy === 'budget_low') {
-        jobsData.sort((a, b) => a.budget_amount - b.budget_amount);
-      } else {
-        jobsData.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-      }
-
-      setJobs(jobsData);
+      setJobs(prev => (append ? [...prev, ...response.data] : response.data));
+      setHasMore(response.data.length === JOBS_PAGE_SIZE);
     } catch (error) {
-      toast.error('Failed to fetch jobs');
+      toast.error(getErrorMessage(error, 'Failed to fetch jobs'));
     } finally {
       setLoading(false);
+      setLoadingMore(false);
     }
   };
 
@@ -1682,7 +1778,7 @@ const FindJobs = () => {
       }
       fetchJobs(); // Refresh to update application counts
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to apply');
+      toast.error(getErrorMessage(error, 'Failed to apply'));
     }
   };
 
@@ -1716,7 +1812,7 @@ const FindJobs = () => {
         {job.photos && job.photos.length > 0 && (
           <div className="ml-4 flex-shrink-0 w-24 h-24 rounded-lg overflow-hidden border border-gray-100">
             <img 
-              src={job.photos[0].startsWith('http') ? job.photos[0] : `${BACKEND_URL}${job.photos[0]}`} 
+              src={assetUrl(job.photos[0])} 
               alt="Job preview" 
               className="w-full h-full object-cover"
               onError={(e) => {
@@ -1850,6 +1946,17 @@ const FindJobs = () => {
           {jobs.map((job) => (
             <JobCard key={job.id} job={job} />
           ))}
+          {hasMore && (
+            <div className="text-center pt-2">
+              <button
+                onClick={() => fetchJobs({ append: true })}
+                disabled={loadingMore}
+                className="px-6 py-2 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              >
+                {loadingMore ? 'Loading...' : 'Load more jobs'}
+              </button>
+            </div>
+          )}
         </div>
       ) : (
         <div className="bg-white rounded-lg p-12 text-center">
@@ -1867,6 +1974,7 @@ const FindJobs = () => {
 
       {/* Bidding Modal */}
       <BiddingModal
+        key={biddingJob?.id || 'no-job'}
         job={biddingJob}
         isOpen={!!biddingJob}
         onClose={() => setBiddingJob(null)}
@@ -1895,15 +2003,23 @@ const AuthPage = () => {
 
     try {
       const endpoint = isLogin ? '/auth/login' : '/auth/register';
-      const data = isLogin 
-        ? { phone: formData.phone, password: formData.password }
-        : formData;
+      const email = formData.email.trim();
+      const data = isLogin
+        ? { phone: formData.phone.trim(), password: formData.password }
+        : {
+            name: formData.name.trim(),
+            phone: formData.phone.trim(),
+            password: formData.password,
+            role: formData.role,
+            // Email is optional: leave it out rather than sending an empty string
+            ...(email ? { email } : {})
+          };
 
       const response = await axios.post(`${API}${endpoint}`, data);
       login(response.data);
       toast.success(isLogin ? 'Logged in successfully!' : 'Account created successfully!');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'An error occurred');
+      toast.error(getErrorMessage(error, 'An error occurred'));
     } finally {
       setLoading(false);
     }
@@ -1992,6 +2108,7 @@ const AuthPage = () => {
               <input
                 type="password"
                 required
+                minLength={isLogin ? undefined : 6}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
                 value={formData.password}
                 onChange={(e) => setFormData({...formData, password: e.target.value})}
@@ -2041,7 +2158,7 @@ const CustomerDashboard = () => {
 
   const fetchJobs = async () => {
     try {
-      const response = await axios.get(`${API}/jobs`);
+      const response = await axios.get(`${API}/jobs`, { params: { mine: true, limit: 100 } });
       setJobs(response.data);
       
       // Calculate stats
@@ -2170,7 +2287,7 @@ const CustomerDashboard = () => {
                   {job.photos && job.photos.length > 0 && (
                     <div className="w-12 h-12 rounded-md overflow-hidden bg-gray-100 mr-4 flex-shrink-0">
                       <img 
-                        src={job.photos[0].startsWith('http') ? job.photos[0] : `${BACKEND_URL}${job.photos[0]}`} 
+                        src={assetUrl(job.photos[0])} 
                         alt="Job" 
                         className="w-full h-full object-cover"
                         onError={(e) => {
@@ -2333,7 +2450,7 @@ const WorkerDashboard = () => {
           <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50">
             <h2 className="text-lg font-bold text-gray-900">Recent Applications</h2>
             <button 
-              onClick={() => navigate('/my-jobs')}
+              onClick={() => navigate('/my-applications')}
               className="text-sm text-orange-600 font-semibold hover:text-orange-700"
             >
               View All
@@ -2416,6 +2533,79 @@ const WorkerDashboard = () => {
   );
 };
 
+// My Applications (Worker View)
+const MyApplications = () => {
+  const navigate = useNavigate();
+  const [applications, setApplications] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchApplications = async () => {
+      try {
+        const response = await axios.get(`${API}/worker/applications`);
+        setApplications(response.data);
+      } catch (error) {
+        toast.error(getErrorMessage(error, 'Failed to load your applications'));
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchApplications();
+  }, []);
+
+  const statusStyles = {
+    accepted: 'bg-green-100 text-green-700',
+    rejected: 'bg-red-100 text-red-700',
+    pending: 'bg-blue-100 text-blue-700'
+  };
+
+  return (
+    <div className="p-6 max-w-4xl mx-auto">
+      <h1 className="text-2xl font-bold text-gray-900 mb-2">My Applications</h1>
+      <p className="text-gray-600 mb-6">Every job you have applied to or bid on</p>
+
+      {loading ? (
+        <div className="flex justify-center p-8">
+          <Loader2 className="w-8 h-8 text-orange-500 animate-spin" />
+        </div>
+      ) : applications.length === 0 ? (
+        <div className="bg-white rounded-lg p-12 text-center border">
+          <Briefcase className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+          <p className="text-gray-500 mb-4">You haven't applied to any jobs yet.</p>
+          <button
+            onClick={() => navigate('/find-jobs')}
+            className="text-orange-600 hover:text-orange-700 font-medium"
+          >
+            Find jobs
+          </button>
+        </div>
+      ) : (
+        <div className="bg-white rounded-lg shadow-sm border divide-y divide-gray-100">
+          {applications.map((app) => (
+            <div
+              key={app.id}
+              className="p-4 hover:bg-gray-50 transition-colors cursor-pointer flex justify-between items-center"
+              onClick={() => navigate(`/jobs/${app.id}`)}
+            >
+              <div>
+                <h3 className="font-bold text-gray-900">{app.title}</h3>
+                <div className="flex items-center gap-3 mt-1 text-sm text-gray-500">
+                  <span>₹{app.budget_amount?.toLocaleString()}</span>
+                  <span className="capitalize">{app.type} job</span>
+                  <span>Applied {new Date(app.applied_at).toLocaleDateString()}</span>
+                </div>
+              </div>
+              <span className={`text-xs px-2 py-1 rounded-full font-bold uppercase ${statusStyles[app.application_status] || statusStyles.pending}`}>
+                {app.application_status}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // Main App Layout
 const AppLayout = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -2466,7 +2656,7 @@ const ProtectedRoute = ({ children, requiredRole }) => {
 
 // Main App Component
 function App() {
-  const { user, loading } = useAuth();
+  const { user, loading, authError, retryAuth, logout } = useAuth();
 
   if (loading) {
     return (
@@ -2475,6 +2665,32 @@ function App() {
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-orange-600 mx-auto mb-4"></div>
           <h2 className="text-xl font-semibold text-orange-600">Sanyuth</h2>
           <p className="text-gray-600">Loading...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // A saved session exists but the server couldn't be reached: offer a retry instead of logging out
+  if (authError && !user) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-gradient-to-br from-orange-50 to-amber-50">
+        <div className="text-center max-w-sm px-4">
+          <h2 className="text-xl font-semibold text-orange-600 mb-2">Sanyuth</h2>
+          <p className="text-gray-600 mb-6">We couldn't reach the server. Please check your connection.</p>
+          <div className="flex gap-3 justify-center">
+            <button
+              onClick={retryAuth}
+              className="px-4 py-2 bg-orange-600 text-white rounded-md hover:bg-orange-700"
+            >
+              Retry
+            </button>
+            <button
+              onClick={logout}
+              className="px-4 py-2 border border-gray-300 text-gray-700 rounded-md hover:bg-gray-50"
+            >
+              Log out
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -2551,6 +2767,15 @@ function App() {
             element={
               <ProtectedRoute requiredRole="worker">
                 <WorkerProfile />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/my-applications"
+            element={
+              <ProtectedRoute requiredRole="worker">
+                <MyApplications />
               </ProtectedRoute>
             }
           />
