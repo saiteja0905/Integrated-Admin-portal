@@ -130,11 +130,28 @@ fly secrets set CORS_ORIGINS="https://your-app-name.fly.dev"
 > The frontend is built into the image and calls the API on the same origin, so
 > `REACT_APP_BACKEND_URL` does not need to be set for Fly.io.
 
-### 4.3.1 Uploaded Files
-Job photos are written to `UPLOAD_DIR` (default `backend/uploads` inside the container).
-Without persistent storage they are lost on every deploy or machine restart. Either
-attach a Fly volume and point `UPLOAD_DIR` at it (the mount must be writable by the
-container's `app` user), or move uploads to object storage such as Tigris/S3.
+### 4.3.1 Uploaded Files (persistent volume)
+Job photos are written to `UPLOAD_DIR`. The container filesystem is wiped on every
+deploy and whenever Fly replaces a machine, so `fly.toml` mounts a volume at `/data`
+and sets `UPLOAD_DIR=/data/uploads`.
+
+Create the volume once per region **before the first deploy**:
+```bash
+# Same name as `source` in the [[mounts]] section of fly.toml
+fly volumes create sanyuth_uploads --region bom --size 3
+
+# Check it
+fly volumes list
+```
+
+Notes:
+- The container entrypoint creates `/data/uploads` and gives it to the `app` user on
+  every boot, so a brand-new (root-owned) volume is writable straight away.
+- A volume is attached to **one machine**. If you scale to several machines, create
+  one volume per machine (`fly volumes create sanyuth_uploads --region bom --size 3`
+  again), and note that each machine then only serves the photos it stored. For
+  multi-machine setups, move uploads to shared object storage (Tigris/S3) instead.
+- Check what a running machine has: `fly ssh console -C "ls /data/uploads"`.
 
 ### 4.4 Deploy to Fly.io
 ```bash

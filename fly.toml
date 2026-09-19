@@ -4,6 +4,16 @@ primary_region = "bom"
 [env]
 PORT = "8000"
 PYTHONPATH = "/app"
+# Job photos live on the mounted volume below, so they survive deploys and
+# machine replacements (the container filesystem does not).
+UPLOAD_DIR = "/data/uploads"
+
+# Persistent storage for uploaded job photos.
+# Create it once per region before the first deploy:
+#   fly volumes create sanyuth_uploads --region bom --size 3
+[[mounts]]
+source = "sanyuth_uploads"
+destination = "/data"
 
 [experimental]
 auto_rollback = true

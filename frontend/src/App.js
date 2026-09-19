@@ -16,9 +16,10 @@ import { toast } from 'sonner';
 import { API, getErrorMessage, assetUrl } from './lib/api';
 
 // Import Lucide icons
-import { 
-  User, 
-  Briefcase, 
+import {
+  User,
+  AlertTriangle,
+  Briefcase,
   MapPin, 
   Clock, 
   Star, 
@@ -765,6 +766,96 @@ const ReviewModal = ({ isOpen, onClose, onSubmit, workerName }) => {
   );
 };
 
+const DISPUTE_CATEGORIES = [
+  { value: 'payment', label: 'Payment problem' },
+  { value: 'quality', label: 'Quality of work' },
+  { value: 'behavior', label: 'Behaviour' },
+  { value: 'no_show', label: 'Did not turn up' },
+  { value: 'fraud', label: 'Fraud' },
+  { value: 'other', label: 'Something else' }
+];
+
+const DisputeModal = ({ isOpen, onClose, onSubmit, otherPartyName }) => {
+  const [title, setTitle] = useState('');
+  const [category, setCategory] = useState('quality');
+  const [description, setDescription] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async () => {
+    setSubmitting(true);
+    const ok = await onSubmit({ title: title.trim(), category, description: description.trim() });
+    setSubmitting(false);
+    if (ok) onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50 backdrop-blur-sm">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+        <div className="p-6 border-b border-gray-100 flex justify-between items-center">
+          <h2 className="text-xl font-bold text-gray-900">Report a problem</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <XCircle className="w-6 h-6" />
+          </button>
+        </div>
+        <div className="p-6 space-y-4">
+          <p className="text-sm text-gray-600">
+            Our team will look into this problem with {otherPartyName} and get back to you.
+          </p>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">What went wrong? *</label>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="e.g., Worker left the job unfinished"
+              className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Type of problem *</label>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+            >
+              {DISPUTE_CATEGORIES.map((option) => (
+                <option key={option.value} value={option.value}>{option.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Tell us what happened *</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={4}
+              placeholder="Explain the problem so our team can help (at least 10 characters)"
+              className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-orange-500 focus:border-transparent resize-none"
+            />
+          </div>
+        </div>
+        <div className="p-6 bg-gray-50 flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-3 border border-gray-200 text-gray-700 rounded-xl hover:bg-white transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={submitting || title.trim().length < 3 || description.trim().length < 10}
+            className="flex-1 px-4 py-3 bg-red-600 text-white rounded-xl hover:bg-red-700 transition-colors disabled:opacity-50"
+          >
+            {submitting ? 'Submitting...' : 'Submit Report'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Job Details & Application Management
 const JobDetails = () => {
   const { jobId } = useParams();
@@ -779,6 +870,8 @@ const JobDetails = () => {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [reviewSubmitted, setReviewSubmitted] = useState(false);
   const [participants, setParticipants] = useState(null);
+  const [dispute, setDispute] = useState(null);
+  const [showDisputeModal, setShowDisputeModal] = useState(false);
 
   useEffect(() => {
     if (jobId) {
@@ -813,8 +906,17 @@ const JobDetails = () => {
         } catch {
           setParticipants(null);
         }
+
+        // Any dispute the caller has already raised (or has to answer) on this job
+        try {
+          const disputeRes = await axios.get(`${API}/disputes`, { params: { job_id: jobId } });
+          setDispute(disputeRes.data[0] || null);
+        } catch {
+          setDispute(null);
+        }
       } else {
         setParticipants(null);
+        setDispute(null);
       }
     } catch (error) {
       console.error(error);
@@ -851,6 +953,18 @@ const JobDetails = () => {
     }
   };
 
+  const handleRaiseDispute = async (disputeData) => {
+    try {
+      const response = await axios.post(`${API}/jobs/${jobId}/dispute`, disputeData);
+      setDispute(response.data);
+      toast.success('Thanks - our team will review this and get back to you.');
+      return true;
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Failed to submit the report'));
+      return false;
+    }
+  };
+
   if (loading) return (
     <div className="p-8 flex justify-center">
       <Loader2 className="w-12 h-12 text-orange-500 animate-spin" />
@@ -870,6 +984,11 @@ const JobDetails = () => {
   const isHired = ['assigned', 'in_progress'].includes(job.status);
   const agreedAmount = participants?.assignment?.final_amount;
   const hiredWorkerName = participants?.worker?.name || 'the worker';
+  // Either party can report a problem once a worker has been hired
+  const canRaiseDispute =
+    (isCustomer || isAssignedWorker) &&
+    ['assigned', 'in_progress', 'completed', 'disputed'].includes(job.status);
+  const otherPartyName = isCustomer ? hiredWorkerName : participants?.customer?.name || 'the customer';
 
   return (
     <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
@@ -947,6 +1066,33 @@ const JobDetails = () => {
                 <Star className="w-4 h-4 mr-2" />
                 Rate Worker
               </button>
+            </div>
+          )}
+
+          {/* Raise a dispute (or see the one already raised) */}
+          {canRaiseDispute && (
+            <div className="px-6 py-4 bg-gray-50 border-t border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              {dispute ? (
+                <>
+                  <p className="text-sm text-gray-700">
+                    <span className="font-medium text-red-700">Problem reported:</span> {dispute.title}
+                  </p>
+                  <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold bg-red-50 text-red-700 capitalize">
+                    {dispute.status.replace('_', ' ')}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-gray-600">Something went wrong with this job?</p>
+                  <button
+                    onClick={() => setShowDisputeModal(true)}
+                    className="flex items-center px-4 py-2 border border-red-200 text-red-700 bg-white rounded-lg hover:bg-red-50"
+                  >
+                    <AlertTriangle className="w-4 h-4 mr-2" />
+                    Report a problem
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -1072,6 +1218,13 @@ const JobDetails = () => {
         job={job}
         amount={agreedAmount}
         onSuccess={fetchJobDetails}
+      />
+
+      <DisputeModal
+        isOpen={showDisputeModal}
+        onClose={() => setShowDisputeModal(false)}
+        onSubmit={handleRaiseDispute}
+        otherPartyName={otherPartyName}
       />
     </div>
   );

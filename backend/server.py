@@ -8,6 +8,7 @@ from pymongo.errors import DuplicateKeyError
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, EmailStr, field_validator
 from typing import List, Optional, Dict, Any, Literal
+from admin_models import Dispute, DisputeStatus
 from datetime import datetime, timezone, timedelta
 from passlib.context import CryptContext
 from jose import JWTError, jwt
@@ -236,6 +237,9 @@ async def ensure_indexes():
         ("jobs", "customer_id", {}),
         ("assignments", "job_id", {"unique": True}),
         ("notifications", "user_id", {}),
+        # Used to pick notification candidates when a job is published
+        ("worker_profiles", "skills", {}),
+        ("worker_profiles", "preferred_locations.lat", {}),
     ]
     for collection, key, options in index_specs:
         try:
@@ -617,6 +621,13 @@ class PaymentVerify(BaseModel):
     razorpay_signature: str
 
 
+# Dispute Models (the stored Dispute model lives in admin_models)
+class DisputeCreate(BaseModel):
+    title: str = Field(min_length=3, max_length=200)
+    description: str = Field(min_length=10, max_length=2000)
+    category: Literal["payment", "quality", "behavior", "fraud", "no_show", "other"]
+
+
 class Payment(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     job_id: str
@@ -703,20 +714,49 @@ def mask_phone_number(phone: str) -> str:
 
 
 # A run of digits that may be broken up by spaces, dashes, dots or brackets, e.g.
-# "9876543210", "98765 43210", "+91-98765-43210", "(987) 654 3210"
-PHONE_CANDIDATE_RE = re.compile(r"(?<!\w)\+?\d[\d\s\-().]{8,}\d(?!\w)")
+# "9876543210", "98765 43210", "+91-98765-43210", "(987) 654 3210". There are no
+# word-boundary guards, so a number glued to a word ("call 9876543210now") is caught too.
+PHONE_CANDIDATE_RE = re.compile(r"\+?\d[\d\s\-().]{8,}\d")
+
+# Digits spelled out to dodge the digit match, e.g. "nine eight seven six five four
+# three two one zero" or "98765 four three two one zero".
+DIGIT_WORDS = {
+    "zero": "0",
+    "oh": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+}
+SPELLED_DIGITS_RE = re.compile(
+    r"(?<![A-Za-z])(?:(?:" + "|".join(DIGIT_WORDS) + r"|\d)[\s\-,.]*){10,}",
+    re.IGNORECASE,
+)
 
 
 def mask_phone_numbers(text: str) -> str:
     """Mask every phone-number-like sequence (10+ digits) in free text."""
 
-    def _mask(match):
+    def _mask_digits(match):
         digits = re.sub(r"\D", "", match.group())
         if len(digits) < 10:
             return match.group()
         return mask_phone_number(digits)
 
-    return PHONE_CANDIDATE_RE.sub(_mask, text)
+    def _mask_spelled(match):
+        tokens = re.findall(r"[A-Za-z]+|\d", match.group())
+        digits = "".join(DIGIT_WORDS.get(t.lower(), t) for t in tokens)
+        if len(digits) < 10 or not digits.isdigit():
+            return match.group()
+        return mask_phone_number(digits)
+
+    masked = PHONE_CANDIDATE_RE.sub(_mask_digits, text)
+    return SPELLED_DIGITS_RE.sub(_mask_spelled, masked)
 
 
 def strip_mongo_id(doc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -1046,6 +1086,13 @@ async def create_job(
     return job
 
 
+# Widest radius a worker can set (see WorkerProfileCreate.service_radius_km) and the
+# rough length of one degree of latitude; together they bound the candidate search.
+MAX_SERVICE_RADIUS_KM = 200
+KM_PER_DEGREE_LAT = 111.0
+NOTIFY_WORKER_LIMIT = 500
+
+
 async def notify_nearby_workers(job: Job):
     """Notify workers within service radius about new job"""
     if not job.location:
@@ -1066,17 +1113,60 @@ async def notify_nearby_workers(job: Job):
         ]
         job_skills = [skill for skill in common_skills if skill in job_text]
 
+    # Let the database pick the candidates instead of scanning every worker profile:
+    # a matching skill, or a preferred location inside the widest box any service
+    # radius could reach. The exact distance is still checked below.
+    lat_delta = MAX_SERVICE_RADIUS_KM / KM_PER_DEGREE_LAT
+    lng_delta = MAX_SERVICE_RADIUS_KM / (
+        KM_PER_DEGREE_LAT * max(math.cos(math.radians(job.location.lat)), 0.01)
+    )
+    candidate_filter: Dict[str, Any] = {
+        "$or": [
+            {
+                "preferred_locations": {
+                    "$elemMatch": {
+                        "lat": {
+                            "$gte": job.location.lat - lat_delta,
+                            "$lte": job.location.lat + lat_delta,
+                        },
+                        "lng": {
+                            "$gte": job.location.lng - lng_delta,
+                            "$lte": job.location.lng + lng_delta,
+                        },
+                    }
+                }
+            }
+        ]
+    }
+    if job_skills:
+        # Skills are stored with their original casing ("Plumbing"), so match them
+        # case-insensitively, exactly as the Python check below does.
+        candidate_filter["$or"].append(
+            {
+                "skills": {
+                    "$in": [
+                        re.compile(f"^{re.escape(skill)}$", re.IGNORECASE)
+                        for skill in job_skills
+                    ]
+                }
+            }
+        )
+
     # Only load the fields needed for matching
-    workers = await db.worker_profiles.find(
-        {},
-        {
-            "_id": 0,
-            "user_id": 1,
-            "skills": 1,
-            "preferred_locations": 1,
-            "service_radius_km": 1,
-        },
-    ).to_list(length=None)
+    workers = (
+        await db.worker_profiles.find(
+            candidate_filter,
+            {
+                "_id": 0,
+                "user_id": 1,
+                "skills": 1,
+                "preferred_locations": 1,
+                "service_radius_km": 1,
+            },
+        )
+        .limit(NOTIFY_WORKER_LIMIT)
+        .to_list(length=None)
+    )
 
     notifications = []
     for worker_profile in workers:
@@ -2037,6 +2127,95 @@ async def create_review(
         )
 
     return review
+
+
+# =============================================================================
+# DISPUTE ROUTES (raised by customers and workers, resolved in the admin portal)
+# =============================================================================
+
+# A dispute is only meaningful once someone has been hired for the job
+DISPUTABLE_JOB_STATUSES = [
+    JobStatus.ASSIGNED,
+    JobStatus.IN_PROGRESS,
+    JobStatus.COMPLETED,
+    JobStatus.DISPUTED,
+]
+OPEN_DISPUTE_STATUSES = [DisputeStatus.OPEN.value, DisputeStatus.UNDER_REVIEW.value]
+
+
+@api_router.post("/jobs/{job_id}/dispute", response_model=Dispute)
+async def create_dispute(
+    job_id: str,
+    dispute_data: DisputeCreate,
+    current_user: User = Depends(get_current_user),
+):
+    """Raise a dispute about a job. Either party can complain about the other."""
+    job_doc = await db.jobs.find_one({"id": job_id})
+    if not job_doc:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    assignment = await db.assignments.find_one({"job_id": job_id})
+    if not assignment or job_doc["status"] not in DISPUTABLE_JOB_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail="A dispute can only be raised after a worker has been hired",
+        )
+
+    # The respondent is always the other party on the job
+    if current_user.id == job_doc["customer_id"]:
+        respondent_id = assignment["worker_id"]
+    elif current_user.id == assignment["worker_id"]:
+        respondent_id = job_doc["customer_id"]
+    else:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    existing = await db.disputes.find_one(
+        {
+            "job_id": job_id,
+            "complainant_id": current_user.id,
+            "status": {"$in": OPEN_DISPUTE_STATUSES},
+        }
+    )
+    if existing:
+        raise HTTPException(
+            status_code=400, detail="You already have an open dispute for this job"
+        )
+
+    dispute = Dispute(
+        job_id=job_id,
+        complainant_id=current_user.id,
+        respondent_id=respondent_id,
+        title=dispute_data.title,
+        description=dispute_data.description,
+        category=dispute_data.category,
+    )
+    await db.disputes.insert_one(dispute.model_dump())
+    return dispute
+
+
+@api_router.get("/disputes", response_model=List[Dispute])
+async def get_my_disputes(
+    job_id: Optional[str] = None,
+    limit: int = Query(20, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+):
+    """Disputes the caller raised or is answering."""
+    filter_dict: Dict[str, Any] = {
+        "$or": [
+            {"complainant_id": current_user.id},
+            {"respondent_id": current_user.id},
+        ]
+    }
+    if job_id:
+        filter_dict["job_id"] = job_id
+
+    disputes = (
+        await db.disputes.find(filter_dict)
+        .sort("created_at", -1)
+        .limit(limit)
+        .to_list(length=None)
+    )
+    return [Dispute(**strip_mongo_id(d)) for d in disputes]
 
 
 @api_router.get("/users/{user_id}/reviews", response_model=List[Review])
