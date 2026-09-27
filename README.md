@@ -29,7 +29,7 @@ Sanyuth is a production-ready application featuring a containerized deployment a
 ## 🔐 Demo Test Credentials
 To allow judges to evaluate the platform's moderation capabilities, the Enterprise Admin Portal is configured with default demo credentials. Once the database relies on its initial seed data, you can log in directly:
 * **Portal URL:** `/admin-login`
-* **Email:** `admin@shidhaan.com`
+* **Phone:** `9876543212` (login is by phone number, not email)
 * **Password:** `admin123`
 
 ## 📚 Official Documentation

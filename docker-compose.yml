@@ -39,10 +39,16 @@ services:
       # Backend environment variables
       - MONGO_URL=mongodb://admin:password123@mongodb:27017
       - DB_NAME=shidhaan_marketplace
-      - JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+      # Read from your shell or a .env file next to this compose file.
+      # If unset, the API generates a random secret on each start (sessions reset on restart).
+      - JWT_SECRET=${JWT_SECRET:-}
       - RAZORPAY_KEY_ID=rzp_test_placeholder
       - RAZORPAY_KEY_SECRET=test_secret_placeholder
       - CORS_ORIGINS=http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000
+      - UPLOAD_DIR=/app/uploads
+    volumes:
+      # Keep uploaded job photos across container rebuilds
+      - uploads_data:/app/uploads
     depends_on:
       mongodb:
         condition: service_healthy
@@ -70,6 +76,8 @@ services:
 
 volumes:
   mongodb_data:
+    driver: local
+  uploads_data:
     driver: local
 
 networks:

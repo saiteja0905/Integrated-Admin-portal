@@ -3,9 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Shield, Lock, User, Eye, EyeOff, AlertCircle, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
-
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+import { API, getErrorMessage } from '../lib/api';
 
 export const AdminLogin = () => {
   const [formData, setFormData] = useState({
@@ -41,7 +39,7 @@ export const AdminLogin = () => {
       handleLogin(userData);
       toast.success('Admin login successful!');
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Login failed');
+      toast.error(getErrorMessage(error, 'Login failed'));
     } finally {
       setLoading(false);
     }

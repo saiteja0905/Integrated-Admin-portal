@@ -115,16 +115,43 @@ fly secrets set MONGO_URL="mongodb+srv://shidhaan_user:your_password@cluster0.xx
 # Set database name
 fly secrets set DB_NAME="shidhaan_marketplace"
 
-# Set JWT secret
-fly secrets set JWT_SECRET="your-super-secret-jwt-key-change-this-in-production"
+# Set JWT secret (required: without it every restart logs all users out,
+# and multiple machines will reject each other's tokens)
+fly secrets set JWT_SECRET="$(openssl rand -hex 32)"
 
 # Set Razorpay credentials
 fly secrets set RAZORPAY_KEY_ID="rzp_test_your_key_id_here"
 fly secrets set RAZORPAY_KEY_SECRET="your_razorpay_secret_here"
 
-# Set frontend backend URL (will be your Fly.io app URL)
-fly secrets set REACT_APP_BACKEND_URL="https://your-app-name.fly.dev"
+# Restrict cross-origin API access to your own domain
+fly secrets set CORS_ORIGINS="https://your-app-name.fly.dev"
 ```
+
+> The frontend is built into the image and calls the API on the same origin, so
+> `REACT_APP_BACKEND_URL` does not need to be set for Fly.io.
+
+### 4.3.1 Uploaded Files (persistent volume)
+Job photos are written to `UPLOAD_DIR`. The container filesystem is wiped on every
+deploy and whenever Fly replaces a machine, so `fly.toml` mounts a volume at `/data`
+and sets `UPLOAD_DIR=/data/uploads`.
+
+Create the volume once per region **before the first deploy**:
+```bash
+# Same name as `source` in the [[mounts]] section of fly.toml
+fly volumes create sanyuth_uploads --region bom --size 3
+
+# Check it
+fly volumes list
+```
+
+Notes:
+- The container entrypoint creates `/data/uploads` and gives it to the `app` user on
+  every boot, so a brand-new (root-owned) volume is writable straight away.
+- A volume is attached to **one machine**. If you scale to several machines, create
+  one volume per machine (`fly volumes create sanyuth_uploads --region bom --size 3`
+  again), and note that each machine then only serves the photos it stored. For
+  multi-machine setups, move uploads to shared object storage (Tigris/S3) instead.
+- Check what a running machine has: `fly ssh console -C "ls /data/uploads"`.
 
 ### 4.4 Deploy to Fly.io
 ```bash
@@ -274,8 +301,8 @@ After successful deployment:
 
 ## Default Admin Credentials
 
-After running `create_demo_users.py`:
-- **Email**: admin@shidhaan.com
+After running `create_demo_users.py` (login is by phone number):
+- **Phone**: 9876543212
 - **Password**: admin123
 
 **⚠️ Important**: Change these credentials immediately after deployment!

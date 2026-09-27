@@ -1,98 +1,104 @@
 import React, { useState, useEffect } from 'react';
 import { useRazorpay } from 'react-razorpay';
-import { X, CreditCard, Smartphone, Banknote, IndianRupee, CheckCircle } from 'lucide-react';
+import { X, CreditCard, Smartphone, Banknote, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
+import { API, getErrorMessage } from '../lib/api';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
-
-export const PaymentModal = ({ isOpen, onClose, job, assignment, onSuccess }) => {
-  const [Razorpay] = useRazorpay();
+export const PaymentModal = ({ isOpen, onClose, job, amount, onSuccess }) => {
+  // react-razorpay v3 returns an object (v2 returned an array)
+  const { Razorpay } = useRazorpay();
   const [selectedMethod, setSelectedMethod] = useState('cod');
   const [loading, setLoading] = useState(false);
-  const [amount, setAmount] = useState(assignment?.final_amount || job?.budget_amount || 0);
+  const [onlineEnabled, setOnlineEnabled] = useState(false);
+
+  // Online methods are only offered when the backend has a payment gateway configured
+  useEffect(() => {
+    if (!isOpen) return;
+    axios.get(`${API}/config`)
+      .then((response) => setOnlineEnabled(Boolean(response.data?.razorpay_key_id)))
+      .catch(() => setOnlineEnabled(false));
+  }, [isOpen]);
 
   const paymentMethods = [
     {
       id: 'cod',
       name: 'Cash on Delivery (COD)',
       icon: Banknote,
-      description: 'Pay with cash when work is completed',
+      description: 'Pay the worker in cash for the completed work',
       enabled: true
     },
     {
       id: 'upi',
       name: 'UPI Payment',
       icon: Smartphone,
-      description: 'Pay instantly via UPI (Google Pay, PhonePe, etc.)',
-      enabled: true
+      description: onlineEnabled ? 'Pay instantly via UPI (Google Pay, PhonePe, etc.)' : 'Not available yet',
+      enabled: onlineEnabled
     },
     {
       id: 'card',
       name: 'Credit/Debit Card',
       icon: CreditCard,
-      description: 'Pay securely with your card',
-      enabled: true
+      description: onlineEnabled ? 'Pay securely with your card' : 'Not available yet',
+      enabled: onlineEnabled
     }
   ];
 
   const handlePayment = async () => {
     setLoading(true);
-    
+
     try {
+      // The server charges the amount agreed at assignment; we send it only as a check
       const response = await axios.post(`${API}/payments/create-order`, {
         job_id: job.id,
-        amount: amount,
+        amount,
         method: selectedMethod
       });
 
       if (selectedMethod === 'cod') {
-        // COD payment - just record it
-        toast.success('COD payment recorded successfully!');
+        toast.success('Cash payment recorded. The job is now complete!');
         onSuccess();
         onClose();
-      } else {
-        // Online payment through Razorpay
-        const { razorpay_order_id, key_id } = response.data;
-        
-        const options = {
-          key: key_id,
-          amount: response.data.amount,
-          currency: 'INR',
-          order_id: razorpay_order_id,
-          name: 'Shidhaan',   
-          description: `Payment for ${job.title}`,
-          handler: async (razorpayResponse) => {
-            try {
-              // Verify payment
-              await axios.post(`${API}/payments/verify`, {
-                payment_id: response.data.payment_id,
-                razorpay_payment_id: razorpayResponse.razorpay_payment_id,
-                razorpay_signature: razorpayResponse.razorpay_signature
-              });
-              
-              toast.success('Payment completed successfully!');
-              onSuccess();
-              onClose();
-            } catch (error) {
-              toast.error('Payment verification failed');
-            }
-          },
-          prefill: {
-            name: 'Customer',
-            contact: '9999999999'
-          },
-          theme: {
-            color: '#ea580c'
-          }
-        };
-
-        const razorpayInstance = new Razorpay(options);
-        razorpayInstance.open();
+        return;
       }
+
+      if (!Razorpay) {
+        toast.error('Payment gateway failed to load. Please try again.');
+        return;
+      }
+
+      const { razorpay_order_id, key_id, payment_id } = response.data;
+      const options = {
+        key: key_id,
+        amount: response.data.amount,
+        currency: 'INR',
+        order_id: razorpay_order_id,
+        name: 'Sanyuth',
+        description: `Payment for ${job.title}`,
+        handler: async (razorpayResponse) => {
+          try {
+            await axios.post(`${API}/payments/verify`, {
+              payment_id,
+              razorpay_payment_id: razorpayResponse.razorpay_payment_id,
+              razorpay_signature: razorpayResponse.razorpay_signature
+            });
+
+            toast.success('Payment completed successfully!');
+            onSuccess();
+            onClose();
+          } catch (error) {
+            toast.error(getErrorMessage(error, 'Payment verification failed'));
+          }
+        },
+        theme: {
+          color: '#ea580c'
+        }
+      };
+
+      const razorpayInstance = new Razorpay(options);
+      razorpayInstance.open();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Payment failed');
+      toast.error(getErrorMessage(error, 'Payment failed'));
     } finally {
       setLoading(false);
     }
@@ -104,7 +110,7 @@ export const PaymentModal = ({ isOpen, onClose, job, assignment, onSuccess }) =>
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl max-w-md w-full p-6">
         <div className="flex justify-between items-center mb-6">
-          <h3 className="text-xl font-bold text-gray-900">Make Payment</h3>
+          <h3 className="text-xl font-bold text-gray-900">Complete Job & Pay</h3>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
             <X className="w-6 h-6" />
           </button>
@@ -114,8 +120,8 @@ export const PaymentModal = ({ isOpen, onClose, job, assignment, onSuccess }) =>
         <div className="bg-gray-50 rounded-lg p-4 mb-6">
           <h4 className="font-semibold text-gray-900 mb-2">{job.title}</h4>
           <div className="flex justify-between text-sm text-gray-600">
-            <span>Amount to Pay:</span>
-            <span className="font-bold text-lg text-orange-600">₹{amount?.toLocaleString()}</span>
+            <span>Agreed Amount:</span>
+            <span className="font-bold text-lg text-orange-600">₹{Number(amount || 0).toLocaleString()}</span>
           </div>
         </div>
 
@@ -148,22 +154,6 @@ export const PaymentModal = ({ isOpen, onClose, job, assignment, onSuccess }) =>
           ))}
         </div>
 
-        {/* Amount Input */}
-        <div className="mb-6">
-          <label className="block text-sm font-medium text-gray-700 mb-2">
-            Payment Amount
-          </label>
-          <div className="relative">
-            <IndianRupee className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
-            <input
-              type="number"
-              value={amount}
-              onChange={(e) => setAmount(parseFloat(e.target.value) || 0)}
-              className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-orange-500 focus:border-orange-500"
-            />
-          </div>
-        </div>
-
         {/* Action Buttons */}
         <div className="flex gap-3">
           <button
@@ -177,7 +167,7 @@ export const PaymentModal = ({ isOpen, onClose, job, assignment, onSuccess }) =>
             disabled={loading || !amount}
             className="flex-1 px-4 py-2 bg-orange-600 text-white rounded-lg hover:bg-orange-700 disabled:opacity-50"
           >
-            {loading ? 'Processing...' : `Pay ₹${amount?.toLocaleString()}`}
+            {loading ? 'Processing...' : `Pay ₹${Number(amount || 0).toLocaleString()}`}
           </button>
         </div>
       </div>
