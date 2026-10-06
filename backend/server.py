@@ -217,7 +217,83 @@ async def seed_demo_data():
                 await db.jobs.insert_one(job)
                 logger.info(f"✅ Created job: {job['title']} ({job['type']})")
 
-            logger.info("🎉 Demo data seeded successfully!")
+            # Seed Scope Agreement
+            demo_agreement = {
+                "id": str(uuid.uuid4()),
+                "job_id": demo_jobs[0]["id"],
+                "customer_id": demo_users[0]["id"],
+                "worker_id": demo_users[1]["id"],
+                "job_title": "Bathroom Plumbing Repair",
+                "work_included": ["Bathroom pipe leakage repair", "Replace damaged washer", "Pressure check"],
+                "work_not_included": ["Tile replacement", "Main line overhaul"],
+                "agreed_price": 2500.0,
+                "materials_responsibility": "Customer supplied",
+                "start_date": datetime.now().strftime("%Y-%m-%d"),
+                "start_time": "10:00 AM",
+                "expected_duration": "3 Hours",
+                "warranty": "30 Days Service Warranty",
+                "status": "active",
+                "customer_agreed_at": datetime.now(timezone.utc),
+                "worker_agreed_at": datetime.now(timezone.utc),
+                "history": [
+                    {
+                        "id": str(uuid.uuid4()),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "actor_id": demo_users[0]["id"],
+                        "actor_role": "customer",
+                        "action": "created",
+                        "summary": "Scope agreement generated and activated for ₹2500"
+                    }
+                ],
+                "created_at": datetime.now(timezone.utc)
+            }
+            await db.scope_agreements.insert_one(demo_agreement)
+
+            # Seed Family Address & Booking
+            demo_family_address = {
+                "id": str(uuid.uuid4()),
+                "customer_id": demo_users[0]["id"],
+                "parent_name": "Ramesh Kumar (Father)",
+                "parent_phone": "9876500001",
+                "address": "House No 42, Jubilee Hills, Road No 10",
+                "city": "Hyderabad",
+                "preferred_language": "Telugu",
+                "landmark": "Near Apollo Hospital",
+                "created_at": datetime.now(timezone.utc)
+            }
+            await db.family_addresses.insert_one(demo_family_address)
+
+            # Seed Ask a Pro Question & Answer
+            q_id = str(uuid.uuid4())
+            demo_question = {
+                "id": q_id,
+                "customer_id": demo_users[0]["id"],
+                "customer_name": demo_users[0]["name"],
+                "title": "My AC is making a loud rattling noise when starting. Is it safe?",
+                "description": "It rattles for 10 seconds whenever the compressor kicks in. Does it need immediate servicing?",
+                "category": "ac_service",
+                "photo_urls": [],
+                "language": "English",
+                "status": "answered",
+                "answers_count": 1,
+                "created_at": datetime.now(timezone.utc)
+            }
+            await db.pro_questions.insert_one(demo_question)
+
+            demo_answer = {
+                "id": str(uuid.uuid4()),
+                "question_id": q_id,
+                "worker_id": demo_users[1]["id"],
+                "worker_name": demo_users[1]["name"],
+                "worker_rating": 4.8,
+                "worker_trade": "Certified AC Technician",
+                "answer_text": "A loud rattling noise on compressor startup usually indicates loose mounting bolts or a failing capacitor. Turn off the AC if it persists to avoid motor damage, and get a technician to inspect the fan blades.",
+                "is_most_helpful": True,
+                "created_at": datetime.now(timezone.utc)
+            }
+            await db.pro_answers.insert_one(demo_answer)
+
+            logger.info("🎉 Demo data and 5 New Features seeded successfully!")
             logger.info("\n📋 Demo Login Credentials:")
             logger.info("   Customer: 9876543210 / password123")
             logger.info("   Worker: 9876543211 / password123")
@@ -226,6 +302,7 @@ async def seed_demo_data():
             logger.info(f"✓ Database already has {user_count} users. Skipping seed.")
     except Exception as e:
         logger.error(f"❌ Error seeding demo data: {e}")
+
 
 
 async def ensure_indexes():
@@ -488,6 +565,12 @@ class JobBase(BaseModel):
     preferred_time_window: Optional[TimeWindow] = None
     budget_amount: float
     is_budget_negotiable: bool = False
+    parent_name: Optional[str] = None
+    parent_phone: Optional[str] = None
+    parent_otp: Optional[str] = "4829"
+    parent_otp_verified: bool = False
+    preferred_language: Optional[str] = "English"
+    arrival_status: str = "assigned"
 
 
 class JobCreate(JobBase):
@@ -1757,6 +1840,44 @@ async def assign_job(
         {"job_id": job_id}, assignment.model_dump(), upsert=True
     )
 
+    # Automatically create Scope Agreement upon hiring worker
+    scope_agreement_doc = {
+        "id": str(uuid.uuid4()),
+        "job_id": job_id,
+        "bid_id": offer.get("id") if isinstance(offer, dict) else getattr(offer, "id", None),
+        "customer_id": current_user.id,
+        "worker_id": worker_id,
+        "job_title": job_doc.get("title", "Service Agreement"),
+        "work_included": [job_doc.get("description", "Standard service execution")],
+        "work_not_included": ["Extra unlisted repair work"],
+        "agreed_price": float(final_amount),
+        "materials_responsibility": "Customer supplied",
+        "start_date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        "start_time": "09:00 AM",
+        "expected_duration": "1 Day",
+        "warranty": "30 Days Service Warranty",
+        "additional_notes": "",
+        "status": "draft",
+        "customer_agreed_at": None,
+        "worker_agreed_at": None,
+        "history": [
+            {
+                "id": str(uuid.uuid4()),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "actor_id": current_user.id,
+                "actor_role": "customer",
+                "action": "created",
+                "summary": f"Scope agreement automatically generated upon hiring worker for ₹{final_amount:g}",
+                "details": {}
+            }
+        ],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.scope_agreements.replace_one(
+        {"job_id": job_id}, scope_agreement_doc, upsert=True
+    )
+
     # Notify worker
     await create_notification(
         worker_id,
@@ -2317,8 +2438,13 @@ async def get_config(current_user: User = Depends(get_current_user)):
 app.include_router(api_router)
 
 from admin_routes import admin_router  # noqa: E402  (imports names defined above)
+from new_features_routes import new_features_router
+from worker_verification_routes import worker_verification_router
 
 app.include_router(admin_router, prefix="/api")
+app.include_router(new_features_router)
+app.include_router(worker_verification_router)
+
 
 
 # =============================================================================

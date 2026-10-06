@@ -12,6 +12,11 @@ import { Toaster } from './components/ui/sonner';
 import { MessagingHub } from './components/MessagingHub';
 import { NotificationBell } from './components/NotificationSystem';
 import { PaymentModal } from './components/PaymentModal';
+import { ScopeAgreementCard } from './components/ScopeAgreementCard';
+import { FamilyMode } from './components/FamilyMode';
+import { AdminNewFeaturesOverview } from './components/AdminPortal';
+import { WorkerVerification } from './components/WorkerVerification';
+import { AdminWorkerVerification } from './components/AdminWorkerVerification';
 import { toast } from 'sonner';
 import { API, getErrorMessage, assetUrl } from './lib/api';
 
@@ -38,6 +43,9 @@ import {
   Home,
   Users,
   Calendar,
+  Heart,
+  HelpCircle,
+  Sparkles,
   MessageCircle,
   CheckCircle,
   ArrowLeft,
@@ -72,6 +80,7 @@ import {
   XCircle,
   Timer,
   BadgeCheck,
+  ShieldCheck,
   Loader2
 } from 'lucide-react';
 
@@ -249,11 +258,13 @@ const Sidebar = ({ isOpen, onClose, activeRoute, setActiveRoute }) => {
       { name: 'Dashboard', icon: Home, route: 'dashboard' },
       { name: 'My Jobs', icon: Briefcase, route: 'my-jobs' },
       { name: 'Post Job', icon: Plus, route: 'post-job' },
+      { name: 'Add Address', icon: MapPin, route: 'add-address' },
       { name: 'Messages', icon: MessageCircle, route: 'messages' }
     ],
     worker: [
       { name: 'Dashboard', icon: Home, route: 'dashboard' },
       { name: 'Find Jobs', icon: Search, route: 'find-jobs' },
+      { name: 'Identity Verification', icon: ShieldCheck, route: 'identity-verification' },
       { name: 'My Applications', icon: Calendar, route: 'my-applications' },
       { name: 'Profile', icon: User, route: 'profile' },
       { name: 'Messages', icon: MessageCircle, route: 'messages' }
@@ -261,7 +272,9 @@ const Sidebar = ({ isOpen, onClose, activeRoute, setActiveRoute }) => {
     admin: [
       { name: 'Dashboard', icon: Home, route: 'admin/dashboard' },
       { name: 'User Management', icon: Users, route: 'admin/users' },
+      { name: 'Worker Verification', icon: ShieldCheck, route: 'admin/worker-verifications' },
       { name: 'Dispute Management', icon: Settings, route: 'admin/disputes' },
+      { name: 'Operations Center', icon: Sparkles, route: 'admin/features' },
       { name: 'Analytics', icon: TrendingUp, route: 'admin/analytics' }
     ]
   };
@@ -407,6 +420,28 @@ const WorkerProfile = () => {
             >
               {isEditing ? <Save className="w-4 h-4 mr-2" /> : <Edit className="w-4 h-4 mr-2" />}
               {isEditing ? 'Save Changes' : 'Edit Profile'}
+            </button>
+          </div>
+
+          {/* Identity Verification Status Card */}
+          <div className="bg-orange-50/60 rounded-xl p-4 mb-6 border border-orange-200 flex flex-wrap justify-between items-center gap-3">
+            <div className="flex items-center space-x-3">
+              <ShieldCheck className="w-6 h-6 text-orange-600" />
+              <div>
+                <h3 className="font-bold text-gray-900 text-sm">Identity Verification Status</h3>
+                <p className="text-xs text-gray-600">
+                  {user?.verification_status === 'VERIFIED' ? '✓ Your identity documents are fully verified.' :
+                   user?.verification_status === 'PENDING_VERIFICATION' ? 'Your verification documents are under admin review.' :
+                   user?.verification_status === 'REJECTED' ? 'Verification rejected. Action required.' :
+                   'Upload your Aadhaar & Labour Certificate to get verified.'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/identity-verification')}
+              className="px-4 py-2 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 shadow-sm"
+            >
+              Manage Verification
             </button>
           </div>
 
@@ -1054,6 +1089,11 @@ const JobDetails = () => {
               </div>
             </div>
           )}
+
+        {/* Digital Scope Agreement Card */}
+        {job && (isHired || job.status === 'completed' || user?.role === 'admin') && (
+          <ScopeAgreementCard jobId={job.id} userRole={user?.role} currentUserId={user?.id} />
+        )}
 
           {/* Action Footer for Customer */}
           {isCustomer && job.status === 'completed' && !reviewSubmitted && (
@@ -2966,6 +3006,54 @@ function App() {
             element={
               <ProtectedRoute requiredRole="admin">
                 <AdminAnalyticsComponent />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/admin/features"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminNewFeaturesOverview />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/admin/worker-verifications"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminWorkerVerification />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Worker Verification Route */}
+          <Route
+            path="/identity-verification"
+            element={
+              <ProtectedRoute requiredRole="worker">
+                <WorkerVerification currentUser={user} />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* 5 New Feature Routes */}
+          {/* Feature Routes */}
+          <Route
+            path="/add-address"
+            element={
+              <ProtectedRoute requiredRole="customer">
+                <FamilyMode />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/family-mode"
+            element={
+              <ProtectedRoute requiredRole="customer">
+                <FamilyMode />
               </ProtectedRoute>
             }
           />

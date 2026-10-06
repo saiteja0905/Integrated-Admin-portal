@@ -781,3 +781,100 @@ async def create_announcement(
         await db.notifications.insert_many(notifications)
 
     return {"message": "Announcement created successfully", "notification_count": len(notifications)}
+
+
+# =============================================================================
+# ADMIN MONITORING FOR 5 NEW FEATURES
+# =============================================================================
+
+@admin_router.get("/scope-agreements")
+async def admin_list_scope_agreements(
+    current_user: User = Depends(require_admin_role())
+):
+    """List scope agreements and change requests for monitoring"""
+    agreements = await db.scope_agreements.find({}, {"_id": 0}).to_list(100)
+    change_requests = await db.agreement_change_requests.find({}, {"_id": 0}).to_list(100)
+    return {
+        "agreements": agreements,
+        "change_requests": change_requests,
+        "total_agreements": len(agreements),
+        "active_agreements": len([a for a in agreements if a.get("status") == "active"])
+    }
+
+
+@admin_router.get("/job-chaining")
+async def admin_get_job_chaining_analytics(
+    current_user: User = Depends(require_admin_role())
+):
+    """Get job chaining worker utilization metrics"""
+    workers = await db.users.find({"role": "worker"}, {"_id": 0, "id": 1, "name": 1}).to_list(100)
+    assignments = await db.assignments.find({}, {"_id": 0}).to_list(200)
+
+    # Calculate chained workers (workers with >= 2 assigned jobs)
+    counts = {}
+    for a in assignments:
+        wid = a["worker_id"]
+        counts[wid] = counts.get(wid, 0) + 1
+
+    chained_count = len([w for w, c in counts.items() if c >= 2])
+    return {
+        "total_workers": len(workers),
+        "workers_with_chained_jobs": chained_count,
+        "average_jobs_per_active_worker": round(len(assignments) / max(1, len(counts)), 2)
+    }
+
+
+@admin_router.get("/family-bookings")
+async def admin_get_family_bookings(
+    current_user: User = Depends(require_admin_role())
+):
+    """List parent bookings and support requests"""
+    family_jobs = await db.jobs.find({"parent_phone": {"$exists": True, "$ne": ""}}, {"_id": 0}).to_list(100)
+    support_requests = await db.family_support_requests.find({}, {"_id": 0}).to_list(100)
+    return {
+        "family_bookings": family_jobs,
+        "support_requests": support_requests,
+        "total_family_bookings": len(family_jobs),
+        "open_support_requests": len([s for s in support_requests if s.get("status") == "open"])
+    }
+
+
+@admin_router.get("/fair-start")
+async def admin_get_fair_start_overview(
+    current_user: User = Depends(require_admin_role())
+):
+    """Overview of new worker eligibility and introductory job progress"""
+    workers = await db.users.find({"role": "worker"}, {"_id": 0}).to_list(100)
+    new_workers = []
+    for w in workers:
+        prof = await db.worker_profiles.find_one({"user_id": w["id"]})
+        completed = prof.get("completed_jobs", 0) if prof else 0
+        if completed < 5:
+            new_workers.append({
+                "worker_id": w["id"],
+                "name": w.get("name"),
+                "completed_jobs": completed,
+                "intro_jobs_remaining": 5 - completed,
+                "is_eligible": True
+            })
+    return {
+        "eligible_new_workers": new_workers,
+        "total_eligible": len(new_workers)
+    }
+
+
+@admin_router.get("/ask-pro")
+async def admin_get_ask_pro_moderation(
+    current_user: User = Depends(require_admin_role())
+):
+    """Ask a Pro Q&A moderation overview"""
+    questions = await db.pro_questions.find({}, {"_id": 0}).to_list(100)
+    answers = await db.pro_answers.find({}, {"_id": 0}).to_list(100)
+    return {
+        "questions": questions,
+        "answers": answers,
+        "total_questions": len(questions),
+        "total_answers": len(answers),
+        "answered_questions": len([q for q in questions if q.get("status") == "answered"])
+    }
+
