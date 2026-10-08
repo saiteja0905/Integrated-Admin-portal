@@ -67,3 +67,39 @@ def test_user_profile_hides_contact_details(client):
     body = response.json()
     assert "phone" not in body
     assert "email" not in body
+
+
+def test_google_auth_new_user(client):
+    payload = {
+        "email": "newgoogleuser@example.com",
+        "name": "Google New User",
+        "role": "customer",
+        "uid": "google_uid_12345"
+    }
+    response = client.post("/api/auth/google", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert "access_token" in data
+    assert data["user"]["email"] == "newgoogleuser@example.com"
+    assert data["user"]["name"] == "Google New User"
+    assert len(data["user"]["phone"]) == 10
+    assert data["user"]["phone"].startswith("99")
+
+
+def test_google_auth_existing_user(client):
+    # First register normal user with email
+    reg = register(client, email="existinggoogle@example.com", phone="9000000088")
+    assert reg.status_code == 200
+
+    # Google auth with same email should log in
+    payload = {
+        "email": "existinggoogle@example.com",
+        "name": "Existing User",
+        "role": "customer"
+    }
+    response = client.post("/api/auth/google", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert "access_token" in data
+    assert data["user"]["email"] == "existinggoogle@example.com"
+

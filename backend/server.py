@@ -1,8 +1,9 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import DuplicateKeyError
 from dotenv import load_dotenv
@@ -34,9 +35,20 @@ UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or ROOT_DIR / "uploads")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # MongoDB connection
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
+mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+use_mock = os.environ.get("USE_MOCK_DB", "true").lower() in ("true", "1")
+
+if mongo_url.startswith("mongomock://") or use_mock or "localhost" in mongo_url:
+    from mongomock_motor import AsyncMongoMockClient
+    client = AsyncMongoMockClient()
+    logger.info("Using in-memory mock MongoDB (mongomock)")
+else:
+    client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=2000)
+
+db = client[os.environ.get("DB_NAME", "shidhaan_marketplace")]
+
+
+
 
 # Security
 # Secrets that have been published in this repository must never be used to sign tokens.
@@ -333,21 +345,37 @@ async def startup_event():
     await seed_demo_data()
 
 
+
+
+@app.exception_handler(Exception)
+async def custom_exception_handler(request: Request, exc: Exception):
+    import traceback
+    logger.error(f"Unhandled Exception on {request.url.path}: {exc}\n{traceback.format_exc()}")
+    if isinstance(exc, HTTPException):
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"{type(exc).__name__}: {str(exc)}", "type": type(exc).__name__}
+    )
+
+
 # CORS middleware. Auth uses bearer tokens (not cookies), so credentials are not needed.
+
 cors_origins = [
     origin.strip()
     for origin in os.environ.get(
-        "CORS_ORIGINS", "http://localhost:3000,http://localhost:8000"
+        "CORS_ORIGINS", "http://localhost:3000,http://localhost:8000,https://sanyuth-dc2d5.web.app"
     ).split(",")
     if origin.strip()
 ]
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=False,
-    allow_origins=cors_origins,
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Serve static uploads
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
@@ -500,6 +528,15 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     phone: str
     password: str
+
+
+class GoogleAuthRequest(BaseModel):
+    email: EmailStr
+    name: str
+    role: Literal["customer", "worker"] = "customer"
+    uid: Optional[str] = None
+    photo_url: Optional[str] = None
+
 
 
 class User(UserBase):
@@ -941,7 +978,9 @@ async def get_current_user(
             detail="Your account has been suspended by an administrator."
         )
 
+    user_doc.pop("_id", None)
     return User(**user_doc)
+
 
 
 def require_role(required_role: str):
@@ -1032,6 +1071,62 @@ async def login(credentials: UserLogin):
         )
 
     return issue_token(User(**user_doc))
+
+
+@api_router.post("/auth/google", response_model=Token)
+async def google_auth(data: GoogleAuthRequest):
+    try:
+        # Search by email
+        user_doc = await db.users.find_one({"email": data.email})
+
+        if user_doc:
+            if user_doc.get("status") == "suspended":
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Your account has been suspended by an administrator.",
+                )
+            user_doc.pop("_id", None)
+            user = User(**user_doc)
+            return issue_token(user)
+
+        # Create new user if account does not exist yet
+        new_user_id = str(uuid.uuid4())
+        # Generate a valid 10-digit phone number for Google users (starts with 99)
+        email_hash_digits = f"{abs(hash(data.email)):08d}"[-8:]
+        dummy_phone = f"99{email_hash_digits}"
+
+        user_dict = {
+            "id": new_user_id,
+            "name": data.name,
+            "email": data.email,
+            "phone": dummy_phone,
+            "role": data.role,
+            "languages": ["en"],
+            "created_at": datetime.now(timezone.utc),
+        }
+
+        user = User(**user_dict)
+
+        doc = user.model_dump()
+        doc["password_hash"] = get_password_hash(str(uuid.uuid4()))
+        doc["status"] = "active"
+        if data.uid:
+            doc["google_uid"] = data.uid
+
+        await db.users.insert_one(doc)
+
+        if user.role == UserRole.WORKER:
+            worker_profile = WorkerProfile(user_id=user.id)
+            await db.worker_profiles.insert_one(worker_profile.model_dump())
+
+        return issue_token(user)
+    except Exception as e:
+        logger.exception(f"Google auth error: {e}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 
 @api_router.get("/auth/me", response_model=User)
