@@ -12,8 +12,15 @@ import { Toaster } from './components/ui/sonner';
 import { MessagingHub } from './components/MessagingHub';
 import { NotificationBell } from './components/NotificationSystem';
 import { PaymentModal } from './components/PaymentModal';
+import { ScopeAgreementCard } from './components/ScopeAgreementCard';
+import { FamilyMode } from './components/FamilyMode';
+import { AdminNewFeaturesOverview } from './components/AdminPortal';
+import { WorkerVerification } from './components/WorkerVerification';
+import { AdminWorkerVerification } from './components/AdminWorkerVerification';
 import { toast } from 'sonner';
 import { API, getErrorMessage, assetUrl } from './lib/api';
+import { signInWithGoogle } from './lib/firebase';
+
 
 // Import Lucide icons
 import {
@@ -38,6 +45,9 @@ import {
   Home,
   Users,
   Calendar,
+  Heart,
+  HelpCircle,
+  Sparkles,
   MessageCircle,
   CheckCircle,
   ArrowLeft,
@@ -72,6 +82,7 @@ import {
   XCircle,
   Timer,
   BadgeCheck,
+  ShieldCheck,
   Loader2
 } from 'lucide-react';
 
@@ -249,11 +260,13 @@ const Sidebar = ({ isOpen, onClose, activeRoute, setActiveRoute }) => {
       { name: 'Dashboard', icon: Home, route: 'dashboard' },
       { name: 'My Jobs', icon: Briefcase, route: 'my-jobs' },
       { name: 'Post Job', icon: Plus, route: 'post-job' },
+      { name: 'Add Address', icon: MapPin, route: 'add-address' },
       { name: 'Messages', icon: MessageCircle, route: 'messages' }
     ],
     worker: [
       { name: 'Dashboard', icon: Home, route: 'dashboard' },
       { name: 'Find Jobs', icon: Search, route: 'find-jobs' },
+      { name: 'Identity Verification', icon: ShieldCheck, route: 'identity-verification' },
       { name: 'My Applications', icon: Calendar, route: 'my-applications' },
       { name: 'Profile', icon: User, route: 'profile' },
       { name: 'Messages', icon: MessageCircle, route: 'messages' }
@@ -261,7 +274,9 @@ const Sidebar = ({ isOpen, onClose, activeRoute, setActiveRoute }) => {
     admin: [
       { name: 'Dashboard', icon: Home, route: 'admin/dashboard' },
       { name: 'User Management', icon: Users, route: 'admin/users' },
+      { name: 'Worker Verification', icon: ShieldCheck, route: 'admin/worker-verifications' },
       { name: 'Dispute Management', icon: Settings, route: 'admin/disputes' },
+      { name: 'Operations Center', icon: Sparkles, route: 'admin/features' },
       { name: 'Analytics', icon: TrendingUp, route: 'admin/analytics' }
     ]
   };
@@ -407,6 +422,28 @@ const WorkerProfile = () => {
             >
               {isEditing ? <Save className="w-4 h-4 mr-2" /> : <Edit className="w-4 h-4 mr-2" />}
               {isEditing ? 'Save Changes' : 'Edit Profile'}
+            </button>
+          </div>
+
+          {/* Identity Verification Status Card */}
+          <div className="bg-orange-50/60 rounded-xl p-4 mb-6 border border-orange-200 flex flex-wrap justify-between items-center gap-3">
+            <div className="flex items-center space-x-3">
+              <ShieldCheck className="w-6 h-6 text-orange-600" />
+              <div>
+                <h3 className="font-bold text-gray-900 text-sm">Identity Verification Status</h3>
+                <p className="text-xs text-gray-600">
+                  {user?.verification_status === 'VERIFIED' ? '✓ Your identity documents are fully verified.' :
+                   user?.verification_status === 'PENDING_VERIFICATION' ? 'Your verification documents are under admin review.' :
+                   user?.verification_status === 'REJECTED' ? 'Verification rejected. Action required.' :
+                   'Upload your Aadhaar & Labour Certificate to get verified.'}
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => navigate('/identity-verification')}
+              className="px-4 py-2 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 shadow-sm"
+            >
+              Manage Verification
             </button>
           </div>
 
@@ -1054,6 +1091,11 @@ const JobDetails = () => {
               </div>
             </div>
           )}
+
+        {/* Digital Scope Agreement Card */}
+        {job && (isHired || job.status === 'completed' || user?.role === 'admin') && (
+          <ScopeAgreementCard jobId={job.id} userRole={user?.role} currentUserId={user?.id} />
+        )}
 
           {/* Action Footer for Customer */}
           {isCustomer && job.status === 'completed' && !reviewSubmitted && (
@@ -2178,6 +2220,27 @@ const AuthPage = () => {
     }
   };
 
+  const handleGoogleSignIn = async () => {
+    setLoading(true);
+    try {
+      const googleUser = await signInWithGoogle();
+      const payload = {
+        email: googleUser.email,
+        name: googleUser.displayName || 'Sanyuth User',
+        role: formData.role,
+        uid: googleUser.uid,
+        photo_url: googleUser.photoURL
+      };
+      const response = await axios.post(`${API}/auth/google`, payload);
+      login(response.data);
+      toast.success('Signed in with Google successfully!');
+    } catch (error) {
+      toast.error(getErrorMessage(error, 'Google sign-in failed. Please try again.'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-amber-50 flex items-center justify-center p-4">
       <div className="max-w-md w-full">
@@ -2271,11 +2334,48 @@ const AuthPage = () => {
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-orange-600 text-white py-2 px-4 rounded-md hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 disabled:opacity-50 transition-colors"
+              className="w-full bg-orange-600 text-white py-2 px-4 rounded-md hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 disabled:opacity-50 transition-colors font-medium"
             >
               {loading ? 'Processing...' : (isLogin ? 'Login' : 'Create Account')}
             </button>
           </form>
+
+          <div className="relative my-6">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-200"></div>
+            </div>
+            <div className="relative flex justify-center text-xs uppercase">
+              <span className="bg-white px-2 text-gray-500 font-medium">Or</span>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleGoogleSignIn}
+            disabled={loading}
+            className="w-full flex items-center justify-center gap-3 bg-white border border-gray-300 text-gray-700 py-2.5 px-4 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 disabled:opacity-50 font-medium shadow-sm transition-all"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path
+                fill="#4285F4"
+                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
+              />
+            </svg>
+            <span>Continue with Google</span>
+          </button>
+
 
           {isLogin && (
             <div className="mt-6 text-center">
@@ -2966,6 +3066,54 @@ function App() {
             element={
               <ProtectedRoute requiredRole="admin">
                 <AdminAnalyticsComponent />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/admin/features"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminNewFeaturesOverview />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/admin/worker-verifications"
+            element={
+              <ProtectedRoute requiredRole="admin">
+                <AdminWorkerVerification />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* Worker Verification Route */}
+          <Route
+            path="/identity-verification"
+            element={
+              <ProtectedRoute requiredRole="worker">
+                <WorkerVerification currentUser={user} />
+              </ProtectedRoute>
+            }
+          />
+
+          {/* 5 New Feature Routes */}
+          {/* Feature Routes */}
+          <Route
+            path="/add-address"
+            element={
+              <ProtectedRoute requiredRole="customer">
+                <FamilyMode />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/family-mode"
+            element={
+              <ProtectedRoute requiredRole="customer">
+                <FamilyMode />
               </ProtectedRoute>
             }
           />

@@ -806,3 +806,84 @@ const AdminDashboardSkeleton = () => (
     </div>
   </div>
 );
+
+// Admin Monitoring for 5 New Features
+export const AdminNewFeaturesOverview = () => {
+  const [agreementsData, setAgreementsData] = useState(null);
+  const [chainingData, setChainingData] = useState(null);
+  const [familyData, setFamilyData] = useState(null);
+  const [fairStartData, setFairStartData] = useState(null);
+  const [askProData, setAskProData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchAllMetrics();
+  }, []);
+
+  const fetchAllMetrics = async () => {
+    try {
+      setLoading(true);
+      const token = localStorage.getItem('token');
+      const headers = { Authorization: `Bearer ${token}` };
+
+      const [ag, ch, fam, fs, pro] = await Promise.all([
+        axios.get(`${API}/admin/scope-agreements`, { headers }).catch(() => ({ data: null })),
+        axios.get(`${API}/admin/job-chaining`, { headers }).catch(() => ({ data: null })),
+        axios.get(`${API}/admin/family-bookings`, { headers }).catch(() => ({ data: null })),
+        axios.get(`${API}/admin/fair-start`, { headers }).catch(() => ({ data: null })),
+        axios.get(`${API}/admin/ask-pro`, { headers }).catch(() => ({ data: null }))
+      ]);
+
+      setAgreementsData(ag.data);
+      setChainingData(ch.data);
+      setFamilyData(fam.data);
+      setFairStartData(fs.data);
+      setAskProData(pro.data);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to load features analytics');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return <div className="p-6"><div className="animate-pulse">Loading features monitoring dashboard...</div></div>;
+  }
+
+  return (
+    <div className="p-6 space-y-8">
+      <div>
+        <h1 className="text-3xl font-bold text-gray-900">Operations Center</h1>
+        <p className="text-gray-600">Enterprise monitoring for Scope Agreements & Saved Address Management</p>
+      </div>
+
+      {/* Grid of Active Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {/* 1. Scope Agreements */}
+        <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-3">
+          <div className="flex justify-between items-center">
+            <h3 className="font-bold text-gray-900 text-lg">📄 Scope Agreements</h3>
+            <span className="px-2.5 py-1 bg-emerald-100 text-emerald-800 rounded-full text-xs font-bold">
+              {agreementsData?.active_agreements || 0} Active
+            </span>
+          </div>
+          <p className="text-2xl font-black text-gray-900">{agreementsData?.total_agreements || 0} Contracts</p>
+          <p className="text-xs text-gray-500">{agreementsData?.change_requests?.length || 0} Change Requests In Pipeline</p>
+        </div>
+
+        {/* 2. Address Management */}
+        <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm space-y-3">
+          <div className="flex justify-between items-center">
+            <h3 className="font-bold text-gray-900 text-lg">📍 Saved Address Book</h3>
+            <span className="px-2.5 py-1 bg-amber-100 text-amber-800 rounded-full text-xs font-bold">
+              Addresses
+            </span>
+          </div>
+          <p className="text-2xl font-black text-gray-900">{familyData?.total_family_bookings || 0} Bookings</p>
+          <p className="text-xs text-amber-600 font-semibold">{familyData?.open_support_requests || 0} Open Support Requests</p>
+        </div>
+      </div>
+    </div>
+  );
+};

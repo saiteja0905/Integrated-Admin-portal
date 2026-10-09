@@ -89,3 +89,8 @@ android-sdk/ -e
 # Environment files
 *.env
 *.env.*
+
+# Temporary scratch & uploads
+scratch/
+uploads/
+backend/uploads/
