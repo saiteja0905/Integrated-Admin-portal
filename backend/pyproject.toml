@@ -15,6 +15,8 @@ dependencies = [
     "isort>=5.13.2",
     "jq>=1.6.0",
     "motor==3.3.1",
+    "mongomock-motor>=0.0.30",
+
     "mypy>=1.8.0",
     "numpy>=1.26.0",
     "pandas>=2.2.0",
