@@ -19,11 +19,12 @@
       "dest": "backend/server.py"
     },
     {
-      "handle": "filesystem"
+      "src": "/(static/.*|favicon.*|manifest.*|robots\\.txt|asset-manifest\\.json|.*\\.(?:png|jpg|jpeg|gif|svg|ico|json|css|js))",
+      "dest": "/frontend/$1"
     },
     {
       "src": "/(.*)",
-      "dest": "/index.html"
+      "dest": "/frontend/index.html"
     }
   ]
 }
