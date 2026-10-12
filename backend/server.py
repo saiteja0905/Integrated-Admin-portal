@@ -39,9 +39,15 @@ load_dotenv(ROOT_DIR / ".env")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Uploads directory (override with UPLOAD_DIR to point at a persistent volume)
-UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or ROOT_DIR / "uploads")
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+# Uploads directory (fallback to /tmp/uploads on serverless environments like Vercel)
+default_upload_dir = Path("/tmp/uploads") if os.environ.get("VERCEL") or not os.access(ROOT_DIR, os.W_OK) else ROOT_DIR / "uploads"
+UPLOAD_DIR = Path(os.environ.get("UPLOAD_DIR") or default_upload_dir)
+try:
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    UPLOAD_DIR = Path("/tmp/uploads")
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # MongoDB connection
 mongo_url = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
