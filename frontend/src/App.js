@@ -19,7 +19,8 @@ import { WorkerVerification } from './components/WorkerVerification';
 import { AdminWorkerVerification } from './components/AdminWorkerVerification';
 import { toast } from 'sonner';
 import { API, getErrorMessage, assetUrl } from './lib/api';
-import { signInWithGoogle } from './lib/firebase';
+import { signInWithGoogle, checkRedirectResult } from './lib/firebase';
+
 
 
 // Import Lucide icons
@@ -2192,6 +2193,32 @@ const AuthPage = () => {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
 
+  useEffect(() => {
+    const handleRedirect = async () => {
+      try {
+        const googleUser = await checkRedirectResult();
+        if (googleUser) {
+          setLoading(true);
+          const payload = {
+            email: googleUser.email,
+            name: googleUser.displayName || 'Sanyuth User',
+            role: 'customer',
+            uid: googleUser.uid,
+            photo_url: googleUser.photoURL
+          };
+          const response = await axios.post(`${API}/auth/google`, payload);
+          login(response.data);
+          toast.success('Signed in with Google successfully!');
+        }
+      } catch (err) {
+        console.error('Redirect sign-in error:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    handleRedirect();
+  }, [login]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -2224,6 +2251,9 @@ const AuthPage = () => {
     setLoading(true);
     try {
       const googleUser = await signInWithGoogle();
+      if (!googleUser) {
+        return;
+      }
       const payload = {
         email: googleUser.email,
         name: googleUser.displayName || 'Sanyuth User',
@@ -2240,6 +2270,7 @@ const AuthPage = () => {
       setLoading(false);
     }
   };
+
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-amber-50 flex items-center justify-center p-4">

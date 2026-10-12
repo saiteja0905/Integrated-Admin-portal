@@ -32,7 +32,12 @@ export const getErrorMessage = (error, fallback = 'Something went wrong') => {
     return 'Domain unauthorized: please add this domain to Firebase Console > Authentication > Settings > Authorized domains.';
   }
 
+  if (error?.code === 'auth/popup-blocked') {
+    return 'Pop-up was blocked by your browser. Please allow pop-ups for this site in your address bar or follow the Google redirect.';
+  }
+
   if (error?.code === 'auth/popup-closed-by-user') {
+
     return 'Sign-in was cancelled.';
   }
 
