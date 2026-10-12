@@ -1,8 +1,17 @@
 // Shared API configuration and helpers.
 
-// Empty means "same origin" (the production image serves the API and the SPA together).
-export const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
+// In production (live deployment), always use same-origin relative URL ('')
+// so requests route through the deployed domain over HTTPS without Mixed Content errors.
+const isLocalhost = typeof window !== 'undefined' && (
+  window.location.hostname === 'localhost' ||
+  window.location.hostname === '127.0.0.1'
+);
+
+export const BACKEND_URL = isLocalhost
+  ? (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000')
+  : '';
 export const API = `${BACKEND_URL}/api`;
+
 
 // Turn an axios error into a human-readable string. FastAPI returns `detail` as a
 // string for HTTPException but as an array of objects for validation errors (422);
