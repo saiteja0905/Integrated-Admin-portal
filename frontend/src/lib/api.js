@@ -28,12 +28,25 @@ export const getErrorMessage = (error, fallback = 'Something went wrong') => {
       .join('; ');
   }
 
+  if (error?.code === 'auth/unauthorized-domain') {
+    return 'Domain unauthorized: please add this domain to Firebase Console > Authentication > Settings > Authorized domains.';
+  }
+
+  if (error?.code === 'auth/popup-closed-by-user') {
+    return 'Sign-in was cancelled.';
+  }
+
   if (error?.request && !error?.response) {
     return 'Unable to reach the server. Please check your connection and try again.';
   }
 
+  if (typeof error?.message === 'string' && error.message && !error?.response) {
+    return error.message;
+  }
+
   return fallback;
 };
+
 
 // Resolve an uploaded file path (e.g. "/uploads/x.jpg") to a full URL.
 export const assetUrl = (path) => {
