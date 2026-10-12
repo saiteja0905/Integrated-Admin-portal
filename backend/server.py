@@ -5,6 +5,8 @@ from pathlib import Path
 BACKEND_DIR = Path(__file__).resolve().parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
+sys.modules["server"] = sys.modules[__name__]
+
 
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Query, UploadFile, File, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
