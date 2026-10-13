@@ -2231,9 +2231,15 @@ const AuthPage = () => {
 
     try {
       const endpoint = isLogin ? '/auth/login' : '/auth/register';
+      const identifier = (formData.email_or_phone || formData.email || formData.phone || '').trim();
       const email = formData.email.trim();
       const data = isLogin
-        ? { phone: formData.phone.trim(), password: formData.password }
+        ? {
+            email_or_phone: identifier,
+            phone: identifier,
+            email: identifier.includes('@') ? identifier : undefined,
+            password: formData.password
+          }
         : {
             name: formData.name.trim(),
             phone: formData.phone.trim(),
@@ -2354,17 +2360,46 @@ const AuthPage = () => {
               </>
             )}
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
-              <input
-                type="tel"
-                required
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                value={formData.phone}
-                onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                placeholder="Enter your phone number"
-              />
-            </div>
+            {isLogin ? (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Email or Phone Number
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-gray-400">
+                    <Mail className="w-5 h-5" />
+                  </div>
+                  <input
+                    type="text"
+                    required
+                    className="w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                    value={formData.email_or_phone !== undefined ? formData.email_or_phone : (formData.phone || formData.email || '')}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setFormData({
+                        ...formData,
+                        email_or_phone: val,
+                        phone: val,
+                        email: val.includes('@') ? val : ''
+                      });
+                    }}
+                    placeholder="Enter email or phone number"
+                  />
+                </div>
+              </div>
+            ) : (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
+                <input
+                  type="tel"
+                  required
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                  value={formData.phone}
+                  onChange={(e) => setFormData({...formData, phone: e.target.value})}
+                  placeholder="Enter your phone number"
+                />
+              </div>
+            )}
 
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>

@@ -1,6 +1,6 @@
 import React, { useState, useContext } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Shield, Lock, User, Eye, EyeOff, AlertCircle, CheckCircle } from 'lucide-react';
+import { Shield, Lock, User, Mail, Eye, EyeOff, AlertCircle, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
 import { API, getErrorMessage } from '../lib/api';
@@ -8,7 +8,7 @@ import { signInWithGoogle } from '../lib/firebase';
 
 export const AdminLogin = () => {
   const [formData, setFormData] = useState({
-    phone: '',
+    email_or_phone: '',
     password: ''
   });
   const [loading, setLoading] = useState(false);
@@ -58,7 +58,14 @@ export const AdminLogin = () => {
     setLoading(true);
 
     try {
-      const response = await axios.post(`${API}/auth/login`, formData);
+      const identifier = formData.email_or_phone.trim();
+      const payload = {
+        email_or_phone: identifier,
+        email: identifier.includes('@') ? identifier : undefined,
+        phone: identifier,
+        password: formData.password
+      };
+      const response = await axios.post(`${API}/auth/login`, payload);
       const userData = response.data;
 
       // Verify admin role
@@ -126,27 +133,27 @@ export const AdminLogin = () => {
 
           <div className="relative flex py-2 items-center mb-6">
             <div className="flex-grow border-t border-white/20"></div>
-            <span className="flex-shrink mx-4 text-slate-400 text-xs font-semibold tracking-wider">OR ADMIN PHONE & PASSWORD</span>
+            <span className="flex-shrink mx-4 text-slate-400 text-xs font-semibold tracking-wider">OR EMAIL &amp; PASSWORD</span>
             <div className="flex-grow border-t border-white/20"></div>
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-6">
-            {/* Phone Number Field */}
+            {/* Email or Phone Field */}
             <div>
               <label className="block text-sm font-medium text-slate-200 mb-2">
-                Admin Phone Number
+                Admin Email or Phone
               </label>
               <div className="relative">
                 <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <User className="w-5 h-5 text-slate-400" />
+                  <Mail className="w-5 h-5 text-slate-400" />
                 </div>
                 <input
-                  type="tel"
+                  type="text"
                   required
-                  value={formData.phone}
-                  onChange={(e) => handleInputChange('phone', e.target.value)}
+                  value={formData.email_or_phone}
+                  onChange={(e) => handleInputChange('email_or_phone', e.target.value)}
                   className="w-full pl-10 pr-4 py-3 bg-white/10 border border-white/20 rounded-lg focus:ring-2 focus:ring-orange-500 focus:border-transparent text-white placeholder-slate-400 transition-all"
-                  placeholder="Enter admin phone number"
+                  placeholder="Enter admin email or phone number"
                 />
               </div>
             </div>
@@ -216,7 +223,7 @@ export const AdminLogin = () => {
                 <Shield className="w-5 h-5 text-orange-400 mt-0.5 mr-3 flex-shrink-0" />
                 <div className="text-sm">
                   <p className="font-medium text-orange-200 mb-1">Authorized Admin Emails</p>
-                  <p className="text-xs text-slate-300 mb-2">Use &quot;Continue with Google&quot; with any verified admin email:</p>
+                  <p className="text-xs text-slate-300 mb-2">Login using Email &amp; Password or &quot;Continue with Google&quot;:</p>
                   <ul className="text-xs text-orange-300/90 font-mono space-y-0.5 list-disc list-inside">
                     <li>shaikbashe222@gmail.com</li>
                     <li>Saiteja.g@alignx.ai</li>
@@ -234,6 +241,7 @@ export const AdminLogin = () => {
                 <div className="text-sm">
                   <p className="font-medium text-green-200 mb-1">Demo Admin Credentials</p>
                   <div className="space-y-0.5 text-green-300 font-mono text-xs">
+                    <div>Email: shaikbashe222@gmail.com</div>
                     <div>Phone: 9876543212</div>
                     <div>Password: admin123</div>
                   </div>

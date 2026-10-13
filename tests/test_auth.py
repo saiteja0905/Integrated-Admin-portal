@@ -178,3 +178,41 @@ def test_stateless_jwt_rehydration_across_serverless_cold_starts(client):
     assert me_res.json()["email"] == "coldstartuser@example.com"
 
 
+def test_login_with_email_and_password_customer(client):
+    # Customer demo user login by email
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "customer@demo.com",
+        "password": "password123"
+    })
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["user"]["email"] == "customer@demo.com"
+    assert data["user"]["role"] == "customer"
+
+
+def test_login_with_email_and_password_admin(client):
+    # Admin login by authorized email
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "shaikbashe222@gmail.com",
+        "password": "admin123"
+    })
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["user"]["email"] == "shaikbashe222@gmail.com"
+    assert data["user"]["role"] == "admin"
+
+    # Verify access to admin portal with this token
+    token = data["access_token"]
+    dash_res = client.get("/api/admin/dashboard", headers={"Authorization": f"Bearer {token}"})
+    assert dash_res.status_code == 200
+
+
+def test_login_with_email_and_wrong_password(client):
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "customer@demo.com",
+        "password": "wrongpassword"
+    })
+    assert response.status_code == 401
+
+
+
