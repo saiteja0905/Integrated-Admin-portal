@@ -126,7 +126,13 @@ def await_list(db, job_id):
     """Small helper: read the notifications this job produced."""
     import asyncio
 
-    return asyncio.get_event_loop().run_until_complete(
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+    return loop.run_until_complete(
         db.notifications.find({"data.job_id": job_id}, {"_id": 0}).to_list(length=None)
     )
 

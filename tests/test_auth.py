@@ -103,3 +103,78 @@ def test_google_auth_existing_user(client):
     assert "access_token" in data
     assert data["user"]["email"] == "existinggoogle@example.com"
 
+
+def test_authorized_admin_emails_get_admin_role_on_google_login(client):
+    admin_emails = [
+        "shaikbashe222@gmail.com",
+        "Saiteja.g@alignx.ai",  # test mixed case handling
+        "saiteja7778@gmail.com",
+        "shanmukhaveera6969@gmail.com",
+        "kamisettyyogesh@gmail.com",
+    ]
+    for email in admin_emails:
+        payload = {
+            "email": email,
+            "name": "Admin Tester",
+            "role": "customer",  # client requests customer, but server must promote to admin
+        }
+        response = client.post("/api/auth/google", json=payload)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["user"]["role"] == "admin", f"Expected admin role for {email}, got {data['user']['role']}"
+
+        # Verify admin can access admin dashboard stats
+        token = data["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        stats_res = client.get("/api/admin/dashboard", headers=headers)
+        assert stats_res.status_code == 200, stats_res.text
+
+
+def test_unauthorized_email_cannot_be_admin(client):
+    payload = {
+        "email": "intruder@gmail.com",
+        "name": "Regular User",
+        "role": "admin",  # tries to request admin
+    }
+    response = client.post("/api/auth/google", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["user"]["role"] != "admin"
+    assert data["user"]["role"] == "customer"
+
+    # Verify denied on admin routes
+    token = data["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    stats_res = client.get("/api/admin/users", headers=headers)
+    assert stats_res.status_code == 403
+
+
+def test_stateless_jwt_rehydration_across_serverless_cold_starts(client):
+    # Register a user and get token
+    reg = client.post("/api/auth/google", json={
+        "email": "coldstartuser@example.com",
+        "name": "Cold Start User",
+        "role": "customer"
+    })
+    assert reg.status_code == 200
+    token = reg.json()["access_token"]
+    user_id = reg.json()["user"]["id"]
+
+    import server
+    import asyncio
+    # Simulate a new serverless container by deleting the user from db.users
+    asyncio.run(server.db.users.delete_one({"id": user_id}))
+
+    # Verify user is gone from DB
+    deleted_check = asyncio.run(server.db.users.find_one({"id": user_id}))
+    assert deleted_check is None
+
+    # Call /api/auth/me with the existing token:
+    # It must re-hydrate the user without returning 401
+    headers = {"Authorization": f"Bearer {token}"}
+    me_res = client.get("/api/auth/me", headers=headers)
+    assert me_res.status_code == 200, me_res.text
+    assert me_res.json()["id"] == user_id
+    assert me_res.json()["email"] == "coldstartuser@example.com"
+
+

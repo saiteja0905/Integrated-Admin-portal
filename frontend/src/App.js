@@ -2192,6 +2192,7 @@ const AuthPage = () => {
   });
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
+  const navigate = useNavigate();
 
   useEffect(() => {
     const handleRedirect = async () => {
@@ -2209,6 +2210,11 @@ const AuthPage = () => {
           const response = await axios.post(`${API}/auth/google`, payload);
           login(response.data);
           toast.success('Signed in with Google successfully!');
+          if (response.data.user?.role === 'admin') {
+            navigate('/admin/dashboard', { replace: true });
+          } else {
+            navigate('/dashboard', { replace: true });
+          }
         }
       } catch (err) {
         console.error('Redirect sign-in error:', err);
@@ -2217,7 +2223,7 @@ const AuthPage = () => {
       }
     };
     handleRedirect();
-  }, [login]);
+  }, [login, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -2240,6 +2246,11 @@ const AuthPage = () => {
       const response = await axios.post(`${API}${endpoint}`, data);
       login(response.data);
       toast.success(isLogin ? 'Logged in successfully!' : 'Account created successfully!');
+      if (response.data.user?.role === 'admin') {
+        navigate('/admin/dashboard', { replace: true });
+      } else {
+        navigate('/dashboard', { replace: true });
+      }
     } catch (error) {
       toast.error(getErrorMessage(error, 'An error occurred'));
     } finally {
@@ -2264,6 +2275,11 @@ const AuthPage = () => {
       const response = await axios.post(`${API}/auth/google`, payload);
       login(response.data);
       toast.success('Signed in with Google successfully!');
+      if (response.data.user?.role === 'admin') {
+        navigate('/admin/dashboard', { replace: true });
+      } else {
+        navigate('/dashboard', { replace: true });
+      }
     } catch (error) {
       toast.error(getErrorMessage(error, 'Google sign-in failed. Please try again.'));
     } finally {
@@ -2987,7 +3003,7 @@ function App() {
           {/* Regular User Authentication */}
           <Route 
             path="/auth" 
-            element={user ? <Navigate to="/dashboard" replace /> : <AuthPage />} 
+            element={user ? (user.role === 'admin' ? <Navigate to="/admin/dashboard" replace /> : <Navigate to="/dashboard" replace />) : <AuthPage />} 
           />
 
           {/* Admin Login - Separate URL */}
