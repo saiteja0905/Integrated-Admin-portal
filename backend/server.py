@@ -76,7 +76,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", 
 
 # Strictly authorized emails that are granted admin privileges
 AUTHORIZED_ADMIN_EMAILS = {
-    "shaikbashe222@gmail.com",
+    "shaikbashe2222@gmail.com",
     "saiteja.g@alignx.ai",
     "saiteja7778@gmail.com",
     "shanmukhaveera6969@gmail.com",

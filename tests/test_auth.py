@@ -106,7 +106,7 @@ def test_google_auth_existing_user(client):
 
 def test_authorized_admin_emails_get_admin_role_on_google_login(client):
     admin_emails = [
-        "shaikbashe222@gmail.com",
+        "shaikbashe2222@gmail.com",
         "Saiteja.g@alignx.ai",  # test mixed case handling
         "saiteja7778@gmail.com",
         "shanmukhaveera6969@gmail.com",
