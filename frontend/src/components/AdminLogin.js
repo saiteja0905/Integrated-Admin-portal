@@ -218,7 +218,7 @@ export const AdminLogin = () => {
                   <p className="font-medium text-orange-200 mb-1">Authorized Admin Emails</p>
                   <p className="text-xs text-slate-300 mb-2">Use &quot;Continue with Google&quot; with any verified admin email:</p>
                   <ul className="text-xs text-orange-300/90 font-mono space-y-0.5 list-disc list-inside">
-                    <li>shaikbashe2222@gmail.com</li>
+                    <li>shaikbashe222@gmail.com</li>
                     <li>Saiteja.g@alignx.ai</li>
                     <li>saiteja7778@gmail.com</li>
                     <li>shanmukhaveera6969@gmail.com</li>
