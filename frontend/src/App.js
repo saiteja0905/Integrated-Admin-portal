@@ -427,24 +427,55 @@ const WorkerProfile = () => {
           </div>
 
           {/* Identity Verification Status Card */}
-          <div className="bg-orange-50/60 rounded-xl p-4 mb-6 border border-orange-200 flex flex-wrap justify-between items-center gap-3">
+          <div className={`rounded-xl p-4 mb-6 border flex flex-wrap justify-between items-center gap-3 ${
+            user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+              ? 'bg-emerald-50/70 border-emerald-200'
+              : user?.verification_status === 'REJECTED' || user?.verification_status === 'IN_PERSON_FAILED'
+              ? 'bg-red-50/70 border-red-200'
+              : 'bg-orange-50/60 border-orange-200'
+          }`}>
             <div className="flex items-center space-x-3">
-              <ShieldCheck className="w-6 h-6 text-orange-600" />
+              <ShieldCheck className={`w-6 h-6 ${
+                user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+                  ? 'text-emerald-600'
+                  : user?.verification_status === 'REJECTED' || user?.verification_status === 'IN_PERSON_FAILED'
+                  ? 'text-red-600'
+                  : 'text-orange-600'
+              }`} />
               <div>
                 <h3 className="font-bold text-gray-900 text-sm">Identity Verification Status</h3>
                 <p className="text-xs text-gray-600">
-                  {user?.verification_status === 'VERIFIED' ? '✓ Your identity documents are fully verified.' :
-                   user?.verification_status === 'PENDING_VERIFICATION' ? 'Your verification documents are under admin review.' :
-                   user?.verification_status === 'REJECTED' ? 'Verification rejected. Action required.' :
-                   'Upload your Aadhaar & Labour Certificate to get verified.'}
+                  {user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+                    ? '✓ You are a fully verified worker.'
+                    : user?.verification_status === 'IN_PERSON_SCHEDULED' || user?.verification_status === 'IN_PERSON_RESCHEDULED'
+                    ? '📅 In-person verification appointment scheduled. Check details.'
+                    : user?.verification_status === 'DOCUMENTS_APPROVED'
+                    ? '✓ Documents approved! In-person verification appointment pending scheduling.'
+                    : user?.verification_status === 'IN_PERSON_FAILED'
+                    ? '⚠️ In-person verification failed. Action required.'
+                    : user?.verification_status === 'NO_SHOW'
+                    ? '⚠️ Verification appointment missed. Contact admin for next steps.'
+                    : user?.verification_status === 'CANCELLED'
+                    ? 'Appointment cancelled. Pending new schedule.'
+                    : user?.verification_status === 'PENDING_VERIFICATION'
+                    ? 'Your verification documents are under admin review.'
+                    : user?.verification_status === 'REJECTED'
+                    ? 'Verification rejected. Action required.'
+                    : 'Upload your Aadhaar & Labour Certificate to get verified.'}
                 </p>
               </div>
             </div>
             <button
               onClick={() => navigate('/identity-verification')}
-              className="px-4 py-2 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 shadow-sm"
+              className={`px-4 py-2 rounded-lg text-xs font-bold text-white shadow-sm transition-colors ${
+                user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+                  ? 'bg-emerald-600 hover:bg-emerald-700'
+                  : 'bg-orange-600 hover:bg-orange-700'
+              }`}
             >
-              Manage Verification
+              {user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+                ? 'View Verification'
+                : 'Manage Verification'}
             </button>
           </div>
 

@@ -381,6 +381,11 @@ async def ensure_indexes():
         # Used to pick notification candidates when a job is published
         ("worker_profiles", "skills", {}),
         ("worker_profiles", "preferred_locations.lat", {}),
+        ("worker_verifications", "worker_id", {"unique": True}),
+        ("worker_verifications", "id", {"unique": True}),
+        ("verification_appointments", "id", {"unique": True}),
+        ("verification_appointments", "verification_id", {}),
+        ("verification_appointments", "worker_id", {}),
     ]
     for collection, key, options in index_specs:
         try:
