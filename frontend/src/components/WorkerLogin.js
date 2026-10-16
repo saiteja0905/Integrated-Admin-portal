@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { 
-  HardHat, 
   Lock, 
   Mail, 
   Phone, 
@@ -134,9 +133,6 @@ export const WorkerLogin = () => {
       <div className="max-w-md w-full my-6">
         {/* Worker Portal Header Branding */}
         <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-tr from-orange-500 to-amber-500 rounded-2xl mb-3 shadow-lg shadow-orange-500/20 text-white">
-            <HardHat className="w-9 h-9" />
-          </div>
           <h1 className="text-4xl font-extrabold text-orange-600 tracking-tight">Sanyuth</h1>
           <p className="text-gray-600 font-medium text-sm mt-0.5">Worker Partner Portal</p>
           <div className="inline-flex items-center px-3.5 py-1 rounded-full text-xs font-bold bg-orange-100 text-orange-800 border border-orange-200 mt-2.5">
@@ -195,7 +191,7 @@ export const WorkerLogin = () => {
                       type="tel"
                       required
                       maxLength={10}
-                      placeholder="10-digit mobile number"
+                      placeholder="Enter 10-digit mobile number (e.g. 9876543210)"
                       className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
                       value={formData.phone}
                       onChange={(e) => setFormData({ ...formData, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })}
@@ -209,7 +205,7 @@ export const WorkerLogin = () => {
                     <Mail className="w-4 h-4 text-gray-400 absolute left-3 top-3.5" />
                     <input
                       type="email"
-                      placeholder="worker@example.com"
+                      placeholder="e.g. ramesh@example.com (optional)"
                       className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
                       value={formData.email}
                       onChange={(e) => setFormData({ ...formData, email: e.target.value })}
@@ -229,7 +225,7 @@ export const WorkerLogin = () => {
                   <input
                     type="text"
                     required
-                    placeholder="Enter email or 10-digit phone"
+                    placeholder="Enter registered email or 10-digit phone number"
                     className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
                     value={formData.email_or_phone}
                     onChange={(e) => {
@@ -257,7 +253,7 @@ export const WorkerLogin = () => {
                   type={showPassword ? 'text' : 'password'}
                   required
                   minLength={isLogin ? undefined : 6}
-                  placeholder="••••••••"
+                  placeholder={isLogin ? "Enter your password" : "Create a strong password (min 6 characters)"}
                   className="w-full pl-9 pr-10 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
                   value={formData.password}
                   onChange={(e) => setFormData({ ...formData, password: e.target.value })}
