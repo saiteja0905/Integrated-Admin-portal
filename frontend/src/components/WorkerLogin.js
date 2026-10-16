@@ -320,12 +320,6 @@ export const WorkerLogin = () => {
                 Customer Login
               </Link>
             </div>
-            <div>
-              Platform Operations?{' '}
-              <Link to="/admin-login" className="text-slate-700 font-bold hover:underline">
-                Admin Portal
-              </Link>
-            </div>
           </div>
         </div>
 
