@@ -61,7 +61,7 @@ export const AdminLogin = () => {
       const identifier = formData.email_or_phone.trim();
       const payload = {
         email_or_phone: identifier,
-        email: identifier.includes('@') ? identifier : undefined,
+        email: identifier.includes('@') ? identifier.toLowerCase() : undefined,
         phone: identifier,
         password: formData.password
       };

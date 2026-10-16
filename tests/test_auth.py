@@ -215,4 +215,56 @@ def test_login_with_email_and_wrong_password(client):
     assert response.status_code == 401
 
 
+def test_login_existing_user_case_insensitive_email(client):
+    # Mixed case email login
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "Customer@Demo.COM",
+        "password": "password123"
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["email"] == "customer@demo.com"
+
+    # Admin mixed case email login
+    res_admin = client.post("/api/auth/login", json={
+        "email_or_phone": "ShaikBashe222@Gmail.COM",
+        "password": "admin123"
+    })
+    assert res_admin.status_code == 200, res_admin.text
+    assert res_admin.json()["user"]["role"] == "admin"
+
+
+def test_login_existing_account_without_password_hash(client):
+    import asyncio
+    from server import db
+
+    async def setup_legacy_user():
+        await db.users.delete_many({"phone": "9811122233"})
+        await db.users.insert_one({
+            "id": "legacy-user-1",
+            "name": "Legacy User",
+            "phone": "9811122233",
+            "email": "legacy@example.com",
+            "role": "customer",
+            "languages": ["en"],
+            "password_hash": None,
+            "status": "active"
+        })
+
+    asyncio.run(setup_legacy_user())
+
+    # Login with a new chosen password should set it and authenticate
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "legacy@example.com",
+        "password": "mypassword123"
+    })
+    assert response.status_code == 200, response.text
+    token = response.json()["access_token"]
+
+    # Verify subsequent /api/auth/me succeeds with token
+    me_res = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_res.status_code == 200
+    assert me_res.json()["name"] == "Legacy User"
+
+
+
 

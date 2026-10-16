@@ -128,22 +128,28 @@ const AuthProvider = ({ children }) => {
     return () => axios.interceptors.response.eject(interceptorId);
   }, [logout]);
 
-  const fetchUserInfo = useCallback(async () => {
+  const fetchUserInfo = useCallback(async (retryCount = 0) => {
     setAuthError(false);
     try {
-      const response = await axios.get(`${API}/auth/me`);
+      const response = await axios.get(`${API}/auth/me`, { timeout: 12000 });
       setUser(response.data);
+      setLoading(false);
     } catch (error) {
       const statusCode = error.response?.status;
       if (statusCode === 401 || statusCode === 403) {
         logout();
+        setLoading(false);
+      } else if (retryCount < 2) {
+        // Automatically retry to transparently absorb Vercel cold starts and network blips
+        setTimeout(() => {
+          fetchUserInfo(retryCount + 1);
+        }, 1200 * (retryCount + 1));
       } else {
-        // Server unreachable or failing: keep the token so a brief outage doesn't log the user out
+        // Server unreachable after retries: show error screen with manual retry
         console.error('Failed to fetch user info:', error);
         setAuthError(true);
+        setLoading(false);
       }
-    } finally {
-      setLoading(false);
     }
   }, [logout]);
 
@@ -163,8 +169,9 @@ const AuthProvider = ({ children }) => {
   }, [token]);
 
   const retryAuth = () => {
+    setAuthError(false);
     setLoading(true);
-    fetchUserInfo();
+    fetchUserInfo(0);
   };
 
   const login = (tokenData) => {
@@ -2263,21 +2270,21 @@ const AuthPage = () => {
     try {
       const endpoint = isLogin ? '/auth/login' : '/auth/register';
       const identifier = (formData.email_or_phone || formData.email || formData.phone || '').trim();
-      const email = formData.email.trim();
+      const email = (formData.email || '').trim();
       const data = isLogin
         ? {
             email_or_phone: identifier,
             phone: identifier,
-            email: identifier.includes('@') ? identifier : undefined,
+            email: identifier.includes('@') ? identifier.toLowerCase() : undefined,
             password: formData.password
           }
         : {
-            name: formData.name.trim(),
-            phone: formData.phone.trim(),
+            name: (formData.name || '').trim(),
+            phone: (formData.phone || '').trim(),
             password: formData.password,
             role: formData.role,
             // Email is optional: leave it out rather than sending an empty string
-            ...(email ? { email } : {})
+            ...(email ? { email: email.toLowerCase() } : {})
           };
 
       const response = await axios.post(`${API}${endpoint}`, data);
