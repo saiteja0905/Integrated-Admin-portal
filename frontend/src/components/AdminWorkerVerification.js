@@ -22,7 +22,9 @@ import {
   RefreshCw,
   History,
   Shield,
-  UserCheck
+  UserCheck,
+  Edit,
+  Save
 } from 'lucide-react';
 import { toast } from 'sonner';
 import axios from 'axios';
@@ -63,19 +65,22 @@ export const AdminWorkerVerification = () => {
     end_time: '11:00',
     officer_name: 'Ramesh Verma - Senior Verification Officer',
     officer_phone: '+91 98765 43210',
-    officer_photo_url: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&w=256&q=80',
     instructions: 'Please bring your original physical Aadhaar card, original Labour Certificate, and valid government photo ID.',
     admin_notes: '',
     reschedule_reason: ''
   });
 
-  // Manage Modal active tab: 'details', 'reschedule', 'outcome', 'history'
+  // Manage Modal active tab: 'details', 'edit', 'reschedule', 'outcome', 'history'
   const [manageTab, setManageTab] = useState('details');
 
   // PDF Viewer Modal
   const [showPdfViewer, setShowPdfViewer] = useState(false);
   const [pdfBlobUrl, setPdfBlobUrl] = useState(null);
   const [loadingPdf, setLoadingPdf] = useState(false);
+
+  // Live Photo state for authenticated loading
+  const [livePhotoBlobUrl, setLivePhotoBlobUrl] = useState(null);
+  const [loadingPhoto, setLoadingPhoto] = useState(false);
 
   useEffect(() => {
     fetchVerifications();
@@ -121,28 +126,64 @@ export const AdminWorkerVerification = () => {
   };
 
   const openReviewModal = async (verifId) => {
+    setLivePhotoBlobUrl(null);
     const detail = await fetchVerificationDetail(verifId);
     if (detail) {
       setShowReviewModal(true);
+      if (detail.live_photo_url) {
+        try {
+          setLoadingPhoto(true);
+          const token = localStorage.getItem('token');
+          const photoRes = await axios.get(
+            `${API}/admin/worker-verifications/${verifId}/document/live_photo`,
+            {
+              headers: { Authorization: `Bearer ${token}` },
+              responseType: 'blob'
+            }
+          );
+          const blobUrl = URL.createObjectURL(photoRes.data);
+          setLivePhotoBlobUrl(blobUrl);
+        } catch (err) {
+          console.warn('Could not load live photo as blob, falling back to query token URL:', err);
+        } finally {
+          setLoadingPhoto(false);
+        }
+      }
     }
   };
 
   const openScheduleModal = async (verifId) => {
     const detail = await fetchVerificationDetail(verifId);
     if (detail) {
-      setScheduleForm(prev => ({
-        ...prev,
-        appointment_date: todayStr,
-        start_time: '10:00',
-        end_time: '11:00',
-        admin_notes: '',
-        reschedule_reason: ''
-      }));
+      if (detail.appointment) {
+        setScheduleForm(prev => ({
+          ...prev,
+          location_name: detail.appointment.location_name || prev.location_name,
+          venue_address: detail.appointment.venue_address || prev.venue_address,
+          appointment_date: detail.appointment.appointment_date || todayStr,
+          start_time: detail.appointment.start_time || '10:00',
+          end_time: detail.appointment.end_time || '11:00',
+          officer_name: detail.appointment.officer_name || prev.officer_name,
+          officer_phone: detail.appointment.officer_phone || prev.officer_phone,
+          instructions: detail.appointment.instructions || prev.instructions,
+          reschedule_reason: '',
+          admin_notes: detail.appointment.admin_notes || ''
+        }));
+      } else {
+        setScheduleForm(prev => ({
+          ...prev,
+          appointment_date: todayStr,
+          start_time: '10:00',
+          end_time: '11:00',
+          admin_notes: '',
+          reschedule_reason: ''
+        }));
+      }
       setShowScheduleModal(true);
     }
   };
 
-  const openManageModal = async (verifId) => {
+  const openManageModal = async (verifId, initialTab = 'details') => {
     const detail = await fetchVerificationDetail(verifId);
     if (detail) {
       if (detail.appointment) {
@@ -160,7 +201,7 @@ export const AdminWorkerVerification = () => {
           admin_notes: detail.appointment.admin_notes || ''
         }));
       }
-      setManageTab('details');
+      setManageTab(initialTab);
       setShowManageModal(true);
     }
   };
@@ -236,7 +277,7 @@ export const AdminWorkerVerification = () => {
     }
   };
 
-  // 3. Stage 2: Schedule In-Person Verification
+  // 3. Stage 2: Schedule or Update In-Person Verification
   const handleScheduleSubmit = async (e) => {
     e.preventDefault();
     if (!selectedVerif?.id) return;
@@ -249,8 +290,17 @@ export const AdminWorkerVerification = () => {
     try {
       setProcessingAction(true);
       const token = localStorage.getItem('token');
-      await axios.post(
-        `${API}/admin/worker-verifications/${selectedVerif.id}/schedule-appointment`,
+      const hasActive = selectedVerif.appointment && 
+        (selectedVerif.appointment.status === 'SCHEDULED' || selectedVerif.appointment.status === 'RESCHEDULED');
+
+      const endpoint = hasActive
+        ? `${API}/admin/worker-verifications/${selectedVerif.id}/appointment`
+        : `${API}/admin/worker-verifications/${selectedVerif.id}/schedule-appointment`;
+
+      const method = hasActive ? axios.put : axios.post;
+
+      await method(
+        endpoint,
         {
           location_name: scheduleForm.location_name,
           venue_address: scheduleForm.venue_address,
@@ -259,17 +309,19 @@ export const AdminWorkerVerification = () => {
           end_time: scheduleForm.end_time,
           officer_name: scheduleForm.officer_name,
           officer_phone: scheduleForm.officer_phone,
-          officer_photo_url: scheduleForm.officer_photo_url,
           instructions: scheduleForm.instructions,
           admin_notes: scheduleForm.admin_notes
         },
         { headers: { Authorization: `Bearer ${token}` } }
       );
-      toast.success('📅 In-Person Verification appointment scheduled successfully!');
+      toast.success(hasActive 
+        ? '✓ Appointment details updated successfully!' 
+        : '📅 In-Person Verification appointment scheduled successfully!');
       setShowScheduleModal(false);
+      setShowManageModal(false);
       fetchVerifications();
     } catch (err) {
-      toast.error(getErrorMessage(err, 'Failed to schedule appointment'));
+      toast.error(getErrorMessage(err, 'Failed to save appointment'));
     } finally {
       setProcessingAction(false);
     }
@@ -659,16 +711,34 @@ export const AdminWorkerVerification = () => {
 
               {/* Live Photograph */}
               <div className="p-4 bg-purple-50/50 rounded-xl border border-purple-200 space-y-3">
-                <label className="text-xs font-bold text-gray-500 uppercase">Live Photograph (Selfie)</label>
-                <div className="flex justify-center">
-                  <img
-                    src={`${API}${selectedVerif.live_photo_url}?token=${localStorage.getItem('token')}`}
-                    alt="Live Photograph preview"
-                    className="max-h-64 rounded-xl border border-gray-300 shadow-sm object-cover"
-                    onError={(e) => {
-                      e.target.src = 'https://via.placeholder.com/300x300?text=Live+Photo+Preview';
-                    }}
-                  />
+                <div className="flex justify-between items-center">
+                  <label className="text-xs font-bold text-gray-500 uppercase flex items-center">
+                    <Camera className="w-4 h-4 mr-1 text-purple-600" />
+                    Live Photograph (Worker Selfie)
+                  </label>
+                  {livePhotoBlobUrl && (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100 px-2.5 py-0.5 rounded-full">
+                      ✓ Authenticated View
+                    </span>
+                  )}
+                </div>
+                <div className="flex justify-center items-center min-h-[160px]">
+                  {loadingPhoto ? (
+                    <div className="flex flex-col items-center justify-center py-8 text-gray-400">
+                      <Loader2 className="w-8 h-8 text-orange-500 animate-spin mb-2" />
+                      <span className="text-xs">Loading live photo securely...</span>
+                    </div>
+                  ) : (
+                    <img
+                      src={livePhotoBlobUrl || `${API}${selectedVerif.live_photo_url}?token=${localStorage.getItem('token')}`}
+                      alt="Live Photograph preview"
+                      className="max-h-72 rounded-xl border border-gray-300 shadow-md object-cover"
+                      onError={(e) => {
+                        e.target.onerror = null;
+                        e.target.src = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80';
+                      }}
+                    />
+                  )}
                 </div>
               </div>
             </div>
@@ -860,7 +930,7 @@ export const AdminWorkerVerification = () => {
                   className="px-6 py-2.5 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 shadow-md transition flex items-center text-sm disabled:opacity-50"
                 >
                   {processingAction ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Calendar className="w-4 h-4 mr-2" />}
-                  Confirm &amp; Schedule Appointment
+                  {selectedVerif.appointment ? 'Save Appointment Details' : 'Confirm & Schedule Appointment'}
                 </button>
               </div>
             </form>
@@ -897,6 +967,14 @@ export const AdminWorkerVerification = () => {
               </button>
               {selectedVerif.status !== 'FULLY_VERIFIED' && selectedVerif.status !== 'VERIFIED' && (
                 <>
+                  <button
+                    onClick={() => setManageTab('edit')}
+                    className={`py-2 px-3 border-b-2 transition ${
+                      manageTab === 'edit' ? 'border-purple-600 text-purple-700' : 'border-transparent text-gray-500 hover:text-gray-700'
+                    }`}
+                  >
+                    Edit Details
+                  </button>
                   <button
                     onClick={() => setManageTab('outcome')}
                     className={`py-2 px-3 border-b-2 transition ${
@@ -977,9 +1055,16 @@ export const AdminWorkerVerification = () => {
                   </div>
                 </div>
 
-                {/* Cancel Button if active */}
+                {/* Actions if active */}
                 {(selectedVerif.appointment.status === 'SCHEDULED' || selectedVerif.appointment.status === 'RESCHEDULED') && (
-                  <div className="flex justify-end pt-2">
+                  <div className="flex justify-between items-center pt-2">
+                    <button
+                      onClick={() => setManageTab('edit')}
+                      className="px-4 py-2 border border-purple-300 text-purple-700 bg-purple-50/60 rounded-xl text-xs font-bold hover:bg-purple-100 flex items-center transition"
+                    >
+                      <Edit className="w-4 h-4 mr-1.5" />
+                      Edit Details
+                    </button>
                     <button
                       onClick={() => setShowCancelModal(true)}
                       className="px-4 py-2 border border-red-300 text-red-600 rounded-xl text-xs font-bold hover:bg-red-50 flex items-center"
@@ -990,6 +1075,135 @@ export const AdminWorkerVerification = () => {
                   </div>
                 )}
               </div>
+            )}
+
+            {/* TAB: EDIT DETAILS */}
+            {manageTab === 'edit' && (
+              <form onSubmit={handleScheduleSubmit} className="space-y-4">
+                <p className="text-xs text-gray-500">Edit the center address, date, time slot, assigned officer, or instructions without creating duplicate appointments.</p>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Center / Location Name *</label>
+                  <input
+                    type="text"
+                    required
+                    value={scheduleForm.location_name}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, location_name: e.target.value })}
+                    placeholder="e.g. Sanyuth Central Verification Hub"
+                    className="w-full p-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Complete Venue Address *</label>
+                  <textarea
+                    required
+                    rows={2}
+                    value={scheduleForm.venue_address}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, venue_address: e.target.value })}
+                    placeholder="Street, Landmark, City, State, PIN"
+                    className="w-full p-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">Appointment Date *</label>
+                    <input
+                      type="date"
+                      required
+                      value={scheduleForm.appointment_date}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, appointment_date: e.target.value })}
+                      className="w-full p-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">Start Time (24h) *</label>
+                    <input
+                      type="time"
+                      required
+                      value={scheduleForm.start_time}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, start_time: e.target.value })}
+                      className="w-full p-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">End Time (24h) *</label>
+                    <input
+                      type="time"
+                      required
+                      value={scheduleForm.end_time}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, end_time: e.target.value })}
+                      className="w-full p-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">Assigned Verification Officer *</label>
+                    <input
+                      type="text"
+                      required
+                      value={scheduleForm.officer_name}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, officer_name: e.target.value })}
+                      placeholder="e.g. Ramesh Verma"
+                      className="w-full p-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-gray-700 mb-1">Officer Contact Phone *</label>
+                    <input
+                      type="text"
+                      required
+                      value={scheduleForm.officer_phone}
+                      onChange={(e) => setScheduleForm({ ...scheduleForm, officer_phone: e.target.value })}
+                      placeholder="e.g. +91 98765 43210"
+                      className="w-full p-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 mb-1">Instructions for Worker</label>
+                  <textarea
+                    rows={2}
+                    value={scheduleForm.instructions}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, instructions: e.target.value })}
+                    placeholder="List required physical documents and instructions"
+                    className="w-full p-2.5 border border-gray-300 rounded-xl text-sm focus:ring-2 focus:ring-purple-500 focus:outline-none"
+                  />
+                </div>
+
+                <div className="p-3 bg-amber-50 rounded-xl border border-amber-200">
+                  <label className="block text-xs font-bold text-amber-900 mb-1">Internal Admin Notes (Private)</label>
+                  <textarea
+                    rows={2}
+                    value={scheduleForm.admin_notes}
+                    onChange={(e) => setScheduleForm({ ...scheduleForm, admin_notes: e.target.value })}
+                    placeholder="Internal reference notes"
+                    className="w-full p-2 border border-amber-300 rounded-lg text-sm bg-white focus:outline-none"
+                  />
+                </div>
+
+                <div className="pt-2 flex justify-end space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => setManageTab('details')}
+                    className="px-4 py-2 border border-gray-300 text-gray-700 rounded-xl text-sm font-bold hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={processingAction}
+                    className="px-6 py-2 bg-purple-600 text-white rounded-xl text-sm font-bold hover:bg-purple-700 shadow flex items-center disabled:opacity-50"
+                  >
+                    {processingAction ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+                    Save Changes
+                  </button>
+                </div>
+              </form>
             )}
 
             {/* TAB 2: RECORD OUTCOME */}

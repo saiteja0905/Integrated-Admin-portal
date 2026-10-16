@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams, Link } from 'react-router-dom';
 import { AdminLogin } from './components/AdminLogin';
+import { WorkerLogin } from './components/WorkerLogin';
 import {
   AdminDashboard as AdminDashboardComponent,
   AdminUserManagement as AdminUserManagementComponent,
@@ -2508,6 +2509,22 @@ const AuthPage = () => {
               </div>
             </div>
           )}
+
+          {/* Quick Cross-Portal Switcher Links */}
+          <div className="mt-6 pt-4 border-t border-gray-100 flex flex-col space-y-2 text-center text-xs text-gray-500">
+            <div>
+              Are you a service worker?{' '}
+              <Link to="/worker-login" className="text-orange-600 font-bold hover:underline">
+                Worker Portal Login →
+              </Link>
+            </div>
+            <div>
+              Platform Operations?{' '}
+              <Link to="/admin-login" className="text-slate-700 font-bold hover:underline">
+                Admin Portal →
+              </Link>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -3077,6 +3094,12 @@ function App() {
           <Route 
             path="/auth" 
             element={user ? (user.role === 'admin' ? <Navigate to="/admin/dashboard" replace /> : <Navigate to="/dashboard" replace />) : <AuthPage />} 
+          />
+
+          {/* Dedicated Worker Login - Separate URL matching Sanyuth UI */}
+          <Route 
+            path="/worker-login" 
+            element={user ? (user.role === 'admin' ? <Navigate to="/admin/dashboard" replace /> : <Navigate to="/dashboard" replace />) : <WorkerLogin />} 
           />
 
           {/* Admin Login - Separate URL */}

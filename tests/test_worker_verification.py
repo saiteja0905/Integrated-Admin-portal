@@ -343,3 +343,97 @@ def test_worker_identity_verification_two_stage_flow(client):
 
     unauth_admin_list = client.get("/api/admin/worker-verifications", headers=wrk_headers)
     assert unauth_admin_list.status_code == 403
+
+
+def test_worker_verification_document_view_and_appointment_editing(client):
+    wrk_headers, wrk_user = login(client, DEMO_WORKER)
+    adm_headers, adm_user = login(client, DEMO_ADMIN)
+
+    # 1. Upload Labour Certificate PDF and Live Photo
+    pdf_content = b"%PDF-1.4 Fake PDF Certificate"
+    pdf_file = {"file": ("certificate.pdf", io.BytesIO(pdf_content), "application/pdf")}
+    cert_res = client.post("/api/worker/verification/upload-doc?doc_type=labour_certificate", files=pdf_file, headers=wrk_headers)
+    assert cert_res.status_code == 200
+
+    photo_content = b"\xff\xd8\xff\xe0\x00\x10JFIF Live Photo"
+    photo_file = {"file": ("selfie.jpg", io.BytesIO(photo_content), "image/jpeg")}
+    photo_res = client.post("/api/worker/verification/upload-doc?doc_type=live_photo", files=photo_file, headers=wrk_headers)
+    assert photo_res.status_code == 200
+
+    # 2. Submit verification
+    submit_res = client.post(
+        "/api/worker/verification/submit",
+        json={
+            "aadhaar_number": "9876 5432 1098",
+            "labour_certificate_filename": cert_res.json()["filename"],
+            "labour_certificate_name": "certificate.pdf",
+            "live_photo_filename": photo_res.json()["filename"]
+        },
+        headers=wrk_headers
+    )
+    assert submit_res.status_code == 200
+    verif_id = submit_res.json()["id"]
+
+    # 3. Test viewing live photo via query token (for img src tags)
+    adm_token = adm_headers["Authorization"].split(" ")[1]
+    photo_view_res = client.get(f"/api/admin/worker-verifications/{verif_id}/document/live_photo?token={adm_token}")
+    assert photo_view_res.status_code == 200
+    assert photo_view_res.headers["content-type"].startswith("image/")
+
+    # Unauthenticated / invalid token should fail
+    bad_view_res = client.get(f"/api/admin/worker-verifications/{verif_id}/document/live_photo?token=invalid_token")
+    assert bad_view_res.status_code == 401
+
+    # 4. Admin approves documents
+    client.post(f"/api/admin/worker-verifications/{verif_id}/approve-documents", headers=adm_headers)
+
+    # 5. Admin schedules appointment
+    next_week = (datetime.now(timezone.utc) + timedelta(days=5)).strftime("%Y-%m-%d")
+    sched_res = client.post(
+        f"/api/admin/worker-verifications/{verif_id}/schedule-appointment",
+        json={
+            "location_name": "Initial Hub",
+            "venue_address": "Old Street, Hyderabad",
+            "appointment_date": next_week,
+            "start_time": "10:00",
+            "end_time": "11:00",
+            "officer_name": "Officer Sharma",
+            "officer_phone": "9876543210",
+            "instructions": "Bring original Aadhaar card."
+        },
+        headers=adm_headers
+    )
+    assert sched_res.status_code == 200
+    # Business Rule: officer_photo_url must be None (no random photo)
+    assert sched_res.json().get("officer_photo_url") is None
+
+    # Check worker view: officer_photo_url must be stripped
+    wrk_view = client.get("/api/worker/verification/status", headers=wrk_headers).json()
+    assert "officer_photo_url" not in wrk_view.get("appointment", {})
+
+    # 6. Admin EDITS appointment details via PUT /appointment
+    edit_res = client.put(
+        f"/api/admin/worker-verifications/{verif_id}/appointment",
+        json={
+            "location_name": "Updated Sanyuth Center",
+            "venue_address": "New Tech Boulevard, Hyderabad - 500081",
+            "officer_name": "Officer Rajesh Verma",
+            "officer_phone": "+91 99887 76655",
+            "instructions": "Updated: Please bring original Labour Certificate and Aadhaar.",
+            "admin_notes": "Officer updated due to shift rotation."
+        },
+        headers=adm_headers
+    )
+    assert edit_res.status_code == 200
+    edited_data = edit_res.json()
+    assert edited_data["location_name"] == "Updated Sanyuth Center"
+    assert edited_data["venue_address"] == "New Tech Boulevard, Hyderabad - 500081"
+    assert edited_data["officer_name"] == "Officer Rajesh Verma"
+    assert edited_data["officer_phone"] == "+91 99887 76655"
+    assert any(h["action"] == "DETAILS_UPDATED" for h in edited_data["history"])
+
+    # Worker sees updated details immediately
+    wrk_updated = client.get("/api/worker/verification/status", headers=wrk_headers).json()
+    assert wrk_updated["appointment"]["location_name"] == "Updated Sanyuth Center"
+    assert wrk_updated["appointment"]["officer_name"] == "Officer Rajesh Verma"
+

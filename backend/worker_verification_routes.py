@@ -5,11 +5,11 @@ import uuid
 import re
 import base64
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Dict, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, Query, UploadFile, File, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, field_validator
 
@@ -148,13 +148,23 @@ class ScheduleAppointmentRequest(BaseModel):
     start_time: str = Field(..., description="HH:MM (24-hour)")
     end_time: str = Field(..., description="HH:MM (24-hour)")
     officer_name: str = Field(..., min_length=2, max_length=100)
-    officer_phone: str = Field(..., min_length=5, max_length=20)
+    officer_phone: str = Field(..., min_length=5, max_length=30)
     officer_photo_url: Optional[str] = Field(None, max_length=500)
-    instructions: str = Field(
+    instructions: Optional[str] = Field(
         default="Please bring your original physical Aadhaar card, physical Labour Certificate, and government photo ID.",
-        min_length=5,
         max_length=1000
     )
+    admin_notes: Optional[str] = Field(None, max_length=1000)
+
+class UpdateAppointmentRequest(BaseModel):
+    location_name: Optional[str] = Field(None, min_length=2, max_length=200)
+    venue_address: Optional[str] = Field(None, min_length=5, max_length=500)
+    appointment_date: Optional[str] = Field(None, description="YYYY-MM-DD")
+    start_time: Optional[str] = Field(None, description="HH:MM (24-hour)")
+    end_time: Optional[str] = Field(None, description="HH:MM (24-hour)")
+    officer_name: Optional[str] = Field(None, min_length=2, max_length=100)
+    officer_phone: Optional[str] = Field(None, min_length=5, max_length=30)
+    instructions: Optional[str] = Field(None, max_length=1000)
     admin_notes: Optional[str] = Field(None, max_length=1000)
 
 class RescheduleAppointmentRequest(BaseModel):
@@ -164,9 +174,9 @@ class RescheduleAppointmentRequest(BaseModel):
     location_name: Optional[str] = Field(None, min_length=2, max_length=200)
     venue_address: Optional[str] = Field(None, min_length=5, max_length=500)
     officer_name: Optional[str] = Field(None, min_length=2, max_length=100)
-    officer_phone: Optional[str] = Field(None, min_length=5, max_length=20)
+    officer_phone: Optional[str] = Field(None, min_length=5, max_length=30)
     officer_photo_url: Optional[str] = None
-    instructions: Optional[str] = Field(None, min_length=5, max_length=1000)
+    instructions: Optional[str] = Field(None, max_length=1000)
     reschedule_reason: str = Field(..., min_length=3, max_length=500)
     admin_notes: Optional[str] = Field(None, max_length=1000)
 
@@ -182,7 +192,19 @@ class RecordOutcomeRequest(BaseModel):
 # VALIDATION & HELPER FUNCTIONS
 # =============================================================================
 
+def normalize_time_str(t: str) -> str:
+    """Normalizes time string into standard HH:MM format."""
+    clean = (t or "").strip()
+    parts = clean.split(":")
+    if len(parts) >= 2:
+        try:
+            return f"{int(parts[0]):02d}:{int(parts[1]):02d}"
+        except Exception:
+            return clean[:5]
+    return clean
+
 def validate_appointment_schedule(appointment_date_str: str, start_time_str: str, end_time_str: str):
+    """Validates appointment date and time window with timezone leeway."""
     try:
         appt_date = datetime.strptime(appointment_date_str.strip(), "%Y-%m-%d").date()
     except ValueError:
@@ -192,38 +214,44 @@ def validate_appointment_schedule(appointment_date_str: str, start_time_str: str
         )
 
     today_date = datetime.now(timezone.utc).date()
-    if appt_date < today_date:
+    # Leeway for UTC vs local timezone variations across globe
+    if appt_date < (today_date - timedelta(days=1)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Appointment date cannot be in the past."
         )
 
+    norm_start = normalize_time_str(start_time_str)
+    norm_end = normalize_time_str(end_time_str)
+
     time_regex = r"^([01]?\d|2[0-3]):([0-5]\d)$"
-    if not re.match(time_regex, start_time_str.strip()):
+    if not re.match(time_regex, norm_start):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid start_time format. Please use HH:MM (24-hour)."
         )
-    if not re.match(time_regex, end_time_str.strip()):
+    if not re.match(time_regex, norm_end):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid end_time format. Please use HH:MM (24-hour)."
         )
 
-    start_dt = datetime.strptime(start_time_str.strip(), "%H:%M")
-    end_dt = datetime.strptime(end_time_str.strip(), "%H:%M")
+    start_dt = datetime.strptime(norm_start, "%H:%M")
+    end_dt = datetime.strptime(norm_end, "%H:%M")
     if end_dt <= start_dt:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Appointment end time must be later than start time."
         )
+    return norm_start, norm_end
 
 def sanitize_appointment_for_worker(appt: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Strips internal admin notes and private metadata from appointment for worker privacy."""
+    """Strips internal admin notes, officer stock photo, and private metadata from appointment for worker privacy."""
     if not appt:
         return None
     appt_copy = dict(appt)
     appt_copy.pop("admin_notes", None)
+    appt_copy.pop("officer_photo_url", None)
     appt_copy.pop("_id", None)
     if "history" in appt_copy and isinstance(appt_copy["history"], list):
         sanitized_history = []
@@ -234,6 +262,43 @@ def sanitize_appointment_for_worker(appt: Optional[Dict[str, Any]]) -> Optional[
             sanitized_history.append(h_copy)
         appt_copy["history"] = sanitized_history
     return appt_copy
+
+async def verify_admin_access(request: Optional[Request] = None, token: Optional[str] = None):
+    """Authenticates admin caller via either Bearer header or query token parameter."""
+    from jose import JWTError, jwt
+    from server import SECRET_KEY, ALGORITHM, db, ensure_db_initialized
+
+    extracted_token = None
+    if request:
+        auth_header = request.headers.get("Authorization")
+        if auth_header and auth_header.startswith("Bearer "):
+            extracted_token = auth_header.split(" ", 1)[1].strip()
+    if not extracted_token and token:
+        extracted_token = token.strip()
+
+    if not extracted_token:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    try:
+        payload = jwt.decode(extracted_token, SECRET_KEY, algorithms=[ALGORITHM])
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    except JWTError:
+        raise HTTPException(status_code=401, detail="Could not validate credentials")
+
+    await ensure_db_initialized()
+    user_doc = await db.users.find_one({"id": user_id})
+    if not user_doc:
+        token_user = payload.get("user_data") or {}
+        token_email = token_user.get("email")
+        if token_email:
+            user_doc = await db.users.find_one({
+                "email": {"$regex": f"^{re.escape(token_email.strip().lower())}$", "$options": "i"}
+            })
+    if not user_doc or user_doc.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin authorization required.")
+    return user_doc
 
 async def send_worker_notification(db, worker_id: str, title: str, message: str, notif_type: str = "verification_status"):
     now = datetime.now(timezone.utc)
@@ -640,11 +705,11 @@ async def get_admin_worker_verification_detail(
 async def get_admin_verification_document(
     verification_id: str,
     doc_type: str,
-    current_user: Any = Depends(get_current_user_dep())
+    request: Request,
+    token: Optional[str] = Query(None)
 ):
-    """Admin endpoint to securely view/download verification document."""
-    if current_user.role != "admin":
-        raise HTTPException(status_code=403, detail="Admin authorization required.")
+    """Admin endpoint to securely view/download verification document. Supports Bearer header or token query parameter."""
+    await verify_admin_access(request, token)
 
     if doc_type not in ("labour_certificate", "live_photo"):
         raise HTTPException(status_code=400, detail="Invalid document type.")
@@ -663,8 +728,16 @@ async def get_admin_verification_document(
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Document file does not exist.")
 
-    media_type = "application/pdf" if doc_type == "labour_certificate" else "image/jpeg"
-    return FileResponse(file_path, media_type=media_type, filename=v.get("labour_certificate_name") if doc_type == "labour_certificate" else "live_photo.jpg")
+    file_ext = os.path.splitext(filename)[1].lower()
+    if doc_type == "labour_certificate":
+        media_type = "application/pdf"
+    elif file_ext in (".png", ".webp"):
+        media_type = f"image/{file_ext[1:]}"
+    else:
+        media_type = "image/jpeg"
+
+    download_name = v.get("labour_certificate_name") if doc_type == "labour_certificate" else f"live_photo{file_ext}"
+    return FileResponse(file_path, media_type=media_type, filename=download_name)
 
 
 # =============================================================================
@@ -821,7 +894,7 @@ async def schedule_in_person_verification(
             detail="Cannot schedule in-person verification until worker documents have been approved."
         )
 
-    validate_appointment_schedule(payload.appointment_date, payload.start_time, payload.end_time)
+    norm_start, norm_end = validate_appointment_schedule(payload.appointment_date, payload.start_time, payload.end_time)
 
     # Business Rule 8: Prevent duplicate active appointments
     existing_active = await db.verification_appointments.find_one({
@@ -845,12 +918,12 @@ async def schedule_in_person_verification(
         "location_name": payload.location_name.strip(),
         "venue_address": payload.venue_address.strip(),
         "appointment_date": payload.appointment_date.strip(),
-        "start_time": payload.start_time.strip(),
-        "end_time": payload.end_time.strip(),
+        "start_time": norm_start,
+        "end_time": norm_end,
         "officer_name": payload.officer_name.strip(),
         "officer_phone": payload.officer_phone.strip(),
-        "officer_photo_url": payload.officer_photo_url or "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&w=256&q=80",
-        "instructions": payload.instructions.strip(),
+        "officer_photo_url": None,
+        "instructions": (payload.instructions or "").strip() or "Please bring your original physical Aadhaar card, physical Labour Certificate, and government photo ID.",
         "admin_notes": payload.admin_notes.strip() if payload.admin_notes else None,
         "status": Stage2Status.SCHEDULED,
         "outcome": None,
@@ -868,8 +941,8 @@ async def schedule_in_person_verification(
                 "admin_id": current_user.id,
                 "details": {
                     "appointment_date": payload.appointment_date.strip(),
-                    "start_time": payload.start_time.strip(),
-                    "end_time": payload.end_time.strip(),
+                    "start_time": norm_start,
+                    "end_time": norm_end,
                     "location_name": payload.location_name.strip()
                 }
             }
@@ -920,6 +993,101 @@ async def schedule_in_person_verification(
     return appt_doc
 
 
+@worker_verification_router.put("/admin/worker-verifications/{verification_id}/appointment")
+@worker_verification_router.post("/admin/worker-verifications/{verification_id}/update-appointment")
+async def update_in_person_verification_appointment(
+    verification_id: str,
+    payload: UpdateAppointmentRequest,
+    current_user: Any = Depends(get_current_user_dep())
+):
+    """Admin updates/edits details of an existing in-person verification appointment."""
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Admin authorization required.")
+
+    db = get_db()
+    v = await db.worker_verifications.find_one({"id": verification_id})
+    if not v:
+        raise HTTPException(status_code=404, detail="Verification record not found.")
+
+    appt = None
+    if v.get("current_appointment_id"):
+        appt = await db.verification_appointments.find_one({"id": v["current_appointment_id"]})
+    if not appt:
+        appt = await db.verification_appointments.find_one(
+            {"verification_id": verification_id},
+            sort=[("created_at", -1)]
+        )
+
+    if not appt:
+        raise HTTPException(status_code=404, detail="No appointment found to update.")
+
+    now = datetime.now(timezone.utc)
+    update_fields: Dict[str, Any] = {"updated_at": now}
+
+    # If date and times are being updated
+    date_val = payload.appointment_date or appt.get("appointment_date")
+    start_val = payload.start_time or appt.get("start_time")
+    end_val = payload.end_time or appt.get("end_time")
+
+    if payload.appointment_date or payload.start_time or payload.end_time:
+        norm_start, norm_end = validate_appointment_schedule(date_val, start_val, end_val)
+        update_fields["appointment_date"] = date_val.strip()
+        update_fields["start_time"] = norm_start
+        update_fields["end_time"] = norm_end
+
+    if payload.location_name:
+        update_fields["location_name"] = payload.location_name.strip()
+    if payload.venue_address:
+        update_fields["venue_address"] = payload.venue_address.strip()
+    if payload.officer_name:
+        update_fields["officer_name"] = payload.officer_name.strip()
+    if payload.officer_phone:
+        update_fields["officer_phone"] = payload.officer_phone.strip()
+    if payload.instructions:
+        update_fields["instructions"] = payload.instructions.strip()
+    if payload.admin_notes is not None:
+        update_fields["admin_notes"] = payload.admin_notes.strip() if payload.admin_notes else None
+
+    history_entry = {
+        "action": "DETAILS_UPDATED",
+        "timestamp": now.isoformat(),
+        "admin_id": current_user.id,
+        "details": {k: v for k, v in update_fields.items() if k not in ("updated_at",)}
+    }
+
+    await db.verification_appointments.update_one(
+        {"id": appt["id"]},
+        {
+            "$set": update_fields,
+            "$push": {"history": history_entry}
+        }
+    )
+
+    worker_id = v["worker_id"]
+    if any(k in update_fields for k in ("location_name", "venue_address", "appointment_date", "start_time", "end_time")):
+        loc_str = update_fields.get("location_name", appt.get("location_name", "Center"))
+        date_str = update_fields.get("appointment_date", appt.get("appointment_date"))
+        await send_worker_notification(
+            db,
+            worker_id,
+            title="Verification Details Updated",
+            message=f"Your verification appointment at {loc_str} on {date_str} has been updated by the admin."
+        )
+
+    await log_audit(
+        db,
+        action="IN_PERSON_APPOINTMENT_DETAILS_UPDATED",
+        user_id=worker_id,
+        admin_id=current_user.id,
+        details={"verification_id": verification_id, "appointment_id": appt["id"], "updates": list(update_fields.keys())}
+    )
+
+    updated_appt = await db.verification_appointments.find_one({"id": appt["id"]})
+    if updated_appt:
+        updated_appt.pop("_id", None)
+    return updated_appt
+
+
 @worker_verification_router.post("/admin/worker-verifications/{verification_id}/reschedule-appointment")
 async def reschedule_in_person_verification(
     verification_id: str,
@@ -950,7 +1118,7 @@ async def reschedule_in_person_verification(
     if appt.get("status") == Stage2Status.PASSED:
         raise HTTPException(status_code=400, detail="Cannot reschedule an appointment that has already passed verification.")
 
-    validate_appointment_schedule(payload.appointment_date, payload.start_time, payload.end_time)
+    norm_start, norm_end = validate_appointment_schedule(payload.appointment_date, payload.start_time, payload.end_time)
 
     now = datetime.now(timezone.utc)
     history_entry = {
@@ -965,8 +1133,8 @@ async def reschedule_in_person_verification(
         },
         "new": {
             "appointment_date": payload.appointment_date.strip(),
-            "start_time": payload.start_time.strip(),
-            "end_time": payload.end_time.strip(),
+            "start_time": norm_start,
+            "end_time": norm_end,
             "location_name": payload.location_name.strip() if payload.location_name else appt.get("location_name")
         },
         "reason": payload.reschedule_reason.strip()

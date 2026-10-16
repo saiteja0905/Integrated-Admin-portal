@@ -538,16 +538,12 @@ export const WorkerVerification = ({ currentUser, onVerificationChange }) => {
                 </div>
                 <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="flex items-center space-x-3">
-                    {appt.officer_photo_url ? (
-                      <img src={appt.officer_photo_url} alt="Officer" className="w-11 h-11 rounded-full object-cover border" />
-                    ) : (
-                      <div className="w-11 h-11 rounded-full bg-purple-100 text-purple-700 flex items-center justify-center font-bold">
-                        {appt.officer_name ? appt.officer_name.charAt(0) : 'O'}
-                      </div>
-                    )}
+                    <div className="w-11 h-11 rounded-full bg-purple-100 text-purple-700 border border-purple-200 flex items-center justify-center font-bold shadow-sm">
+                      <User className="w-5 h-5 text-purple-700" />
+                    </div>
                     <div>
                       <p className="text-sm font-bold text-gray-900">{appt.officer_name}</p>
-                      <p className="text-xs text-gray-500">Contact Officer</p>
+                      <p className="text-xs text-gray-500">Authorized Verification Officer</p>
                     </div>
                   </div>
 
