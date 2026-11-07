@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useParams, Link } from 'react-router-dom';
 import { AdminLogin } from './components/AdminLogin';
+import { WorkerLogin } from './components/WorkerLogin';
 import {
   AdminDashboard as AdminDashboardComponent,
   AdminUserManagement as AdminUserManagementComponent,
@@ -19,7 +20,8 @@ import { WorkerVerification } from './components/WorkerVerification';
 import { AdminWorkerVerification } from './components/AdminWorkerVerification';
 import { toast } from 'sonner';
 import { API, getErrorMessage, assetUrl } from './lib/api';
-import { signInWithGoogle } from './lib/firebase';
+import { signInWithGoogle, checkRedirectResult } from './lib/firebase';
+
 
 
 // Import Lucide icons
@@ -83,7 +85,10 @@ import {
   Timer,
   BadgeCheck,
   ShieldCheck,
-  Loader2
+  Loader2,
+  Lock,
+  EyeOff,
+  ArrowRight
 } from 'lucide-react';
 
 import './App.css';
@@ -127,22 +132,28 @@ const AuthProvider = ({ children }) => {
     return () => axios.interceptors.response.eject(interceptorId);
   }, [logout]);
 
-  const fetchUserInfo = useCallback(async () => {
+  const fetchUserInfo = useCallback(async (retryCount = 0) => {
     setAuthError(false);
     try {
-      const response = await axios.get(`${API}/auth/me`);
+      const response = await axios.get(`${API}/auth/me`, { timeout: 12000 });
       setUser(response.data);
+      setLoading(false);
     } catch (error) {
       const statusCode = error.response?.status;
       if (statusCode === 401 || statusCode === 403) {
         logout();
+        setLoading(false);
+      } else if (retryCount < 2) {
+        // Automatically retry to transparently absorb Vercel cold starts and network blips
+        setTimeout(() => {
+          fetchUserInfo(retryCount + 1);
+        }, 1200 * (retryCount + 1));
       } else {
-        // Server unreachable or failing: keep the token so a brief outage doesn't log the user out
+        // Server unreachable after retries: show error screen with manual retry
         console.error('Failed to fetch user info:', error);
         setAuthError(true);
+        setLoading(false);
       }
-    } finally {
-      setLoading(false);
     }
   }, [logout]);
 
@@ -162,8 +173,9 @@ const AuthProvider = ({ children }) => {
   }, [token]);
 
   const retryAuth = () => {
+    setAuthError(false);
     setLoading(true);
-    fetchUserInfo();
+    fetchUserInfo(0);
   };
 
   const login = (tokenData) => {
@@ -426,24 +438,55 @@ const WorkerProfile = () => {
           </div>
 
           {/* Identity Verification Status Card */}
-          <div className="bg-orange-50/60 rounded-xl p-4 mb-6 border border-orange-200 flex flex-wrap justify-between items-center gap-3">
+          <div className={`rounded-xl p-4 mb-6 border flex flex-wrap justify-between items-center gap-3 ${
+            user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+              ? 'bg-emerald-50/70 border-emerald-200'
+              : user?.verification_status === 'REJECTED' || user?.verification_status === 'IN_PERSON_FAILED'
+              ? 'bg-red-50/70 border-red-200'
+              : 'bg-orange-50/60 border-orange-200'
+          }`}>
             <div className="flex items-center space-x-3">
-              <ShieldCheck className="w-6 h-6 text-orange-600" />
+              <ShieldCheck className={`w-6 h-6 ${
+                user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+                  ? 'text-emerald-600'
+                  : user?.verification_status === 'REJECTED' || user?.verification_status === 'IN_PERSON_FAILED'
+                  ? 'text-red-600'
+                  : 'text-orange-600'
+              }`} />
               <div>
                 <h3 className="font-bold text-gray-900 text-sm">Identity Verification Status</h3>
                 <p className="text-xs text-gray-600">
-                  {user?.verification_status === 'VERIFIED' ? '✓ Your identity documents are fully verified.' :
-                   user?.verification_status === 'PENDING_VERIFICATION' ? 'Your verification documents are under admin review.' :
-                   user?.verification_status === 'REJECTED' ? 'Verification rejected. Action required.' :
-                   'Upload your Aadhaar & Labour Certificate to get verified.'}
+                  {user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+                    ? '✓ You are a fully verified worker.'
+                    : user?.verification_status === 'IN_PERSON_SCHEDULED' || user?.verification_status === 'IN_PERSON_RESCHEDULED'
+                    ? '📅 In-person verification appointment scheduled. Check details.'
+                    : user?.verification_status === 'DOCUMENTS_APPROVED'
+                    ? '✓ Documents approved! In-person verification appointment pending scheduling.'
+                    : user?.verification_status === 'IN_PERSON_FAILED'
+                    ? '⚠️ In-person verification failed. Action required.'
+                    : user?.verification_status === 'NO_SHOW'
+                    ? '⚠️ Verification appointment missed. Contact admin for next steps.'
+                    : user?.verification_status === 'CANCELLED'
+                    ? 'Appointment cancelled. Pending new schedule.'
+                    : user?.verification_status === 'PENDING_VERIFICATION'
+                    ? 'Your verification documents are under admin review.'
+                    : user?.verification_status === 'REJECTED'
+                    ? 'Verification rejected. Action required.'
+                    : 'Upload your Aadhaar & Labour Certificate to get verified.'}
                 </p>
               </div>
             </div>
             <button
               onClick={() => navigate('/identity-verification')}
-              className="px-4 py-2 bg-orange-600 text-white rounded-lg text-xs font-bold hover:bg-orange-700 shadow-sm"
+              className={`px-4 py-2 rounded-lg text-xs font-bold text-white shadow-sm transition-colors ${
+                user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+                  ? 'bg-emerald-600 hover:bg-emerald-700'
+                  : 'bg-orange-600 hover:bg-orange-700'
+              }`}
             >
-              Manage Verification
+              {user?.is_verified || user?.verification_status === 'FULLY_VERIFIED' || user?.verification_status === 'VERIFIED'
+                ? 'View Verification'
+                : 'Manage Verification'}
             </button>
           </div>
 
@@ -2179,7 +2222,7 @@ const FindJobs = () => {
   );
 };
 
-// Auth Pages (existing code - same as before)
+// Auth Pages (Modern UI matching WorkerLogin)
 const AuthPage = () => {
   const [isLogin, setIsLogin] = useState(true);
   const [formData, setFormData] = useState({
@@ -2187,10 +2230,44 @@ const AuthPage = () => {
     phone: '',
     email: '',
     password: '',
+    email_or_phone: '',
     role: 'customer'
   });
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
   const { login } = useAuth();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    const handleRedirect = async () => {
+      try {
+        const googleUser = await checkRedirectResult();
+        if (googleUser) {
+          setLoading(true);
+          const payload = {
+            email: googleUser.email,
+            name: googleUser.displayName || 'Customer',
+            role: 'customer',
+            uid: googleUser.uid,
+            photo_url: googleUser.photoURL
+          };
+          const response = await axios.post(`${API}/auth/google`, payload);
+          login(response.data);
+          toast.success('Signed in with Google successfully!');
+          if (response.data.user?.role === 'admin') {
+            navigate('/admin/dashboard', { replace: true });
+          } else {
+            navigate('/dashboard', { replace: true });
+          }
+        }
+      } catch (err) {
+        console.error('Redirect sign-in error:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    handleRedirect();
+  }, [login, navigate]);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -2198,21 +2275,32 @@ const AuthPage = () => {
 
     try {
       const endpoint = isLogin ? '/auth/login' : '/auth/register';
-      const email = formData.email.trim();
+      const identifier = (formData.email_or_phone || formData.email || formData.phone || '').trim();
+      const email = (formData.email || '').trim();
+      const phone = (formData.phone || '').trim();
       const data = isLogin
-        ? { phone: formData.phone.trim(), password: formData.password }
+        ? {
+            email_or_phone: identifier,
+            phone: identifier,
+            email: identifier.includes('@') ? identifier.toLowerCase() : undefined,
+            password: formData.password
+          }
         : {
-            name: formData.name.trim(),
-            phone: formData.phone.trim(),
+            name: (formData.name || '').trim(),
+            phone: phone,
             password: formData.password,
-            role: formData.role,
-            // Email is optional: leave it out rather than sending an empty string
-            ...(email ? { email } : {})
+            role: 'customer',
+            ...(email ? { email: email.toLowerCase() } : {})
           };
 
       const response = await axios.post(`${API}${endpoint}`, data);
       login(response.data);
       toast.success(isLogin ? 'Logged in successfully!' : 'Account created successfully!');
+      if (response.data.user?.role === 'admin') {
+        navigate('/admin/dashboard', { replace: true });
+      } else {
+        navigate('/dashboard', { replace: true });
+      }
     } catch (error) {
       toast.error(getErrorMessage(error, 'An error occurred'));
     } finally {
@@ -2224,16 +2312,24 @@ const AuthPage = () => {
     setLoading(true);
     try {
       const googleUser = await signInWithGoogle();
+      if (!googleUser) {
+        return;
+      }
       const payload = {
         email: googleUser.email,
-        name: googleUser.displayName || 'Sanyuth User',
-        role: formData.role,
+        name: googleUser.displayName || 'Customer',
+        role: 'customer',
         uid: googleUser.uid,
         photo_url: googleUser.photoURL
       };
       const response = await axios.post(`${API}/auth/google`, payload);
       login(response.data);
       toast.success('Signed in with Google successfully!');
+      if (response.data.user?.role === 'admin') {
+        navigate('/admin/dashboard', { replace: true });
+      } else {
+        navigate('/dashboard', { replace: true });
+      }
     } catch (error) {
       toast.error(getErrorMessage(error, 'Google sign-in failed. Please try again.'));
     } finally {
@@ -2243,29 +2339,38 @@ const AuthPage = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-orange-50 to-amber-50 flex items-center justify-center p-4">
-      <div className="max-w-md w-full">
-        <div className="text-center mb-8">
-          <h1 className="text-4xl font-bold text-orange-600 mb-2">Sanyuth</h1>
-          <p className="text-gray-600">AI Powered - Blue Collar Marketplace</p>
+      <div className="max-w-md w-full my-6">
+        {/* Customer Portal Header Branding */}
+        <div className="text-center mb-6">
+          <h1 className="text-4xl font-extrabold text-orange-600 tracking-tight">Sanyuth</h1>
+          <p className="text-gray-600 font-medium text-sm mt-0.5">Customer Portal</p>
+          <div className="inline-flex items-center px-3.5 py-1 rounded-full text-xs font-bold bg-orange-100 text-orange-800 border border-orange-200 mt-2.5">
+            <Users className="w-3.5 h-3.5 mr-1.5 text-orange-600" />
+            Hire Verified Professionals
+          </div>
         </div>
 
-        <div className="bg-white rounded-xl shadow-lg p-8">
-          <div className="flex mb-6 bg-gray-100 rounded-lg p-1">
+        {/* Auth Card */}
+        <div className="bg-white rounded-2xl shadow-xl border border-orange-100 p-8">
+          {/* Tab Switcher */}
+          <div className="flex mb-6 bg-gray-100 rounded-xl p-1">
             <button
-              className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
-                isLogin ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'
+              type="button"
+              className={`flex-1 py-2 px-4 rounded-lg text-sm font-bold transition-all ${
+                isLogin ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
               }`}
               onClick={() => setIsLogin(true)}
             >
-              Login
+              Customer Login
             </button>
             <button
-              className={`flex-1 py-2 px-4 rounded-md text-sm font-medium transition-colors ${
-                !isLogin ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500'
+              type="button"
+              className={`flex-1 py-2 px-4 rounded-lg text-sm font-bold transition-all ${
+                !isLogin ? 'bg-white shadow-sm text-gray-900' : 'text-gray-500 hover:text-gray-700'
               }`}
               onClick={() => setIsLogin(false)}
             >
-              Sign Up
+              Create Account
             </button>
           </div>
 
@@ -2273,121 +2378,163 @@ const AuthPage = () => {
             {!isLogin && (
               <>
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Name</label>
-                  <input
-                    type="text"
-                    required
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                    value={formData.name}
-                    onChange={(e) => setFormData({...formData, name: e.target.value})}
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
-                  <select
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                    value={formData.role}
-                    onChange={(e) => setFormData({...formData, role: e.target.value})}
-                  >
-                    <option value="customer">Customer</option>
-                    <option value="worker">Worker</option>
-                  </select>
+                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Full Name</label>
+                  <div className="relative">
+                    <User className="w-4 h-4 text-gray-400 absolute left-3 top-3.5" />
+                    <input
+                      type="text"
+                      required
+                      placeholder="e.g. Rahul Sharma"
+                      className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                      value={formData.name}
+                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    />
+                  </div>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">Email (Optional)</label>
-                  <input
-                    type="email"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                    value={formData.email}
-                    onChange={(e) => setFormData({...formData, email: e.target.value})}
-                  />
+                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Phone Number (10 digits)</label>
+                  <div className="relative">
+                    <Phone className="w-4 h-4 text-gray-400 absolute left-3 top-3.5" />
+                    <input
+                      type="tel"
+                      required
+                      maxLength={10}
+                      placeholder="Enter 10-digit mobile number (e.g. 9876543210)"
+                      className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                      value={formData.phone}
+                      onChange={(e) => setFormData({ ...formData, phone: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Email (Optional)</label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-gray-400 absolute left-3 top-3.5" />
+                    <input
+                      type="email"
+                      placeholder="e.g. rahul@example.com (optional)"
+                      className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                      value={formData.email}
+                      onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                    />
+                  </div>
                 </div>
               </>
             )}
 
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
-              <input
-                type="tel"
-                required
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                value={formData.phone}
-                onChange={(e) => setFormData({...formData, phone: e.target.value})}
-                placeholder="Enter your phone number"
-              />
-            </div>
+            {isLogin && (
+              <div>
+                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
+                  Email or Phone Number
+                </label>
+                <div className="relative">
+                  <Mail className="w-4 h-4 text-gray-400 absolute left-3 top-3.5" />
+                  <input
+                    type="text"
+                    required
+                    placeholder="Enter registered email or 10-digit phone number"
+                    className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                    value={formData.email_or_phone !== undefined ? formData.email_or_phone : (formData.phone || formData.email || '')}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setFormData({
+                        ...formData,
+                        email_or_phone: val,
+                        phone: val,
+                        email: val.includes('@') ? val : ''
+                      });
+                    }}
+                  />
+                </div>
+              </div>
+            )}
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
-              <input
-                type="password"
-                required
-                minLength={isLogin ? undefined : 6}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
-                value={formData.password}
-                onChange={(e) => setFormData({...formData, password: e.target.value})}
-              />
+              <div className="flex justify-between items-center mb-1">
+                <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider">Password</label>
+                {!isLogin && <span className="text-[11px] text-gray-400">Min 6 characters</span>}
+              </div>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-gray-400 absolute left-3 top-3.5" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  minLength={isLogin ? undefined : 6}
+                  placeholder={isLogin ? "Enter your password" : "Create a strong password (min 6 characters)"}
+                  className="w-full pl-9 pr-10 py-2.5 border border-gray-300 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-orange-500"
+                  value={formData.password}
+                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-3 text-gray-400 hover:text-gray-600"
+                >
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
 
             <button
               type="submit"
               disabled={loading}
-              className="w-full bg-orange-600 text-white py-2 px-4 rounded-md hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 disabled:opacity-50 transition-colors font-medium"
+              className="w-full bg-orange-600 text-white py-3 px-4 rounded-xl hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-orange-500 font-bold shadow-md shadow-orange-600/20 disabled:opacity-50 transition flex items-center justify-center text-sm"
             >
-              {loading ? 'Processing...' : (isLogin ? 'Login' : 'Create Account')}
+              {loading ? (
+                <Loader2 className="w-4 h-4 animate-spin mr-2" />
+              ) : (
+                <ArrowRight className="w-4 h-4 mr-2" />
+              )}
+              {isLogin ? 'Sign In to Customer Portal' : 'Create Customer Account'}
             </button>
           </form>
 
+          {/* Social Divider */}
           <div className="relative my-6">
             <div className="absolute inset-0 flex items-center">
               <div className="w-full border-t border-gray-200"></div>
             </div>
             <div className="relative flex justify-center text-xs uppercase">
-              <span className="bg-white px-2 text-gray-500 font-medium">Or</span>
+              <span className="bg-white px-3 text-gray-400 font-bold tracking-wider">Or</span>
             </div>
           </div>
 
+          {/* Google Sign-in */}
           <button
             type="button"
             onClick={handleGoogleSignIn}
             disabled={loading}
-            className="w-full flex items-center justify-center gap-3 bg-white border border-gray-300 text-gray-700 py-2.5 px-4 rounded-md hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:ring-offset-2 disabled:opacity-50 font-medium shadow-sm transition-all"
+            className="w-full flex items-center justify-center gap-3 bg-white border border-gray-300 text-gray-700 py-2.5 px-4 rounded-xl hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-orange-500 font-semibold shadow-sm transition disabled:opacity-50 text-sm"
           >
-            <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path
-                fill="#4285F4"
-                d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-              />
-              <path
-                fill="#34A853"
-                d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-              />
-              <path
-                fill="#FBBC05"
-                d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-              />
-              <path
-                fill="#EA4335"
-                d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-              />
+            <svg className="w-4 h-4" viewBox="0 0 24 24">
+              <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+              <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+              <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+              <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
             </svg>
-            <span>Continue with Google</span>
+            Continue with Google
           </button>
 
-
-          {isLogin && (
-            <div className="mt-6 text-center">
-              <p className="text-sm text-gray-600">
-                Demo Accounts:
-              </p>
-              <div className="mt-2 text-xs text-gray-500 space-y-1">
-                <div>Customer: 9876543210 / password123</div>
-                <div>Worker: 9876543211 / password123</div>
-              </div>
+          {/* Quick Cross-Portal Switcher Links */}
+          <div className="mt-6 pt-5 border-t border-gray-100 flex flex-col space-y-2 text-center text-xs text-gray-500">
+            <div>
+              Are you a service worker?{' '}
+              <Link to="/worker-login" className="text-orange-600 font-bold hover:underline">
+                Worker Portal Login →
+              </Link>
             </div>
-          )}
+          </div>
+        </div>
+
+        {/* Benefits Footnote */}
+        <div className="mt-6 text-center text-xs text-gray-500 space-y-1">
+          <p className="flex items-center justify-center font-medium text-gray-600">
+            <ShieldCheck className="w-4 h-4 text-emerald-600 mr-1" />
+            Verified Service Professionals
+          </p>
+          <p className="text-[11px] text-gray-400">Book trusted plumbers, electricians, painters &amp; carpenters on demand.</p>
         </div>
       </div>
     </div>
@@ -2956,7 +3103,13 @@ function App() {
           {/* Regular User Authentication */}
           <Route 
             path="/auth" 
-            element={user ? <Navigate to="/dashboard" replace /> : <AuthPage />} 
+            element={user ? (user.role === 'admin' ? <Navigate to="/admin/dashboard" replace /> : <Navigate to="/dashboard" replace />) : <AuthPage />} 
+          />
+
+          {/* Dedicated Worker Login - Separate URL matching Sanyuth UI */}
+          <Route 
+            path="/worker-login" 
+            element={user ? (user.role === 'admin' ? <Navigate to="/admin/dashboard" replace /> : <Navigate to="/dashboard" replace />) : <WorkerLogin />} 
           />
 
           {/* Admin Login - Separate URL */}

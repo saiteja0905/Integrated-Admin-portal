@@ -18,11 +18,13 @@ from admin_models import (
     PlatformConfig,
     UserStrike,
 )
-from server import get_current_user, User, UserRole, db
 
 logger = logging.getLogger(__name__)
 
 admin_router = APIRouter(prefix="/admin", tags=["admin"])
+
+from server import get_current_user, User, UserRole, db
+
 
 # Payments that count as platform revenue
 REVENUE_PAYMENT_STATUSES = ["succeeded", "recorded_cod"]

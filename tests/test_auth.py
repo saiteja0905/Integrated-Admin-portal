@@ -103,3 +103,168 @@ def test_google_auth_existing_user(client):
     assert "access_token" in data
     assert data["user"]["email"] == "existinggoogle@example.com"
 
+
+def test_authorized_admin_emails_get_admin_role_on_google_login(client):
+    admin_emails = [
+        "shaikbashe222@gmail.com",
+        "Saiteja.g@alignx.ai",  # test mixed case handling
+        "saiteja7778@gmail.com",
+        "shanmukhaveera6969@gmail.com",
+        "kamisettyyogesh@gmail.com",
+    ]
+    for email in admin_emails:
+        payload = {
+            "email": email,
+            "name": "Admin Tester",
+            "role": "customer",  # client requests customer, but server must promote to admin
+        }
+        response = client.post("/api/auth/google", json=payload)
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["user"]["role"] == "admin", f"Expected admin role for {email}, got {data['user']['role']}"
+
+        # Verify admin can access admin dashboard stats
+        token = data["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        stats_res = client.get("/api/admin/dashboard", headers=headers)
+        assert stats_res.status_code == 200, stats_res.text
+
+
+def test_unauthorized_email_cannot_be_admin(client):
+    payload = {
+        "email": "intruder@gmail.com",
+        "name": "Regular User",
+        "role": "admin",  # tries to request admin
+    }
+    response = client.post("/api/auth/google", json=payload)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["user"]["role"] != "admin"
+    assert data["user"]["role"] == "customer"
+
+    # Verify denied on admin routes
+    token = data["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    stats_res = client.get("/api/admin/users", headers=headers)
+    assert stats_res.status_code == 403
+
+
+def test_stateless_jwt_rehydration_across_serverless_cold_starts(client):
+    # Register a user and get token
+    reg = client.post("/api/auth/google", json={
+        "email": "coldstartuser@example.com",
+        "name": "Cold Start User",
+        "role": "customer"
+    })
+    assert reg.status_code == 200
+    token = reg.json()["access_token"]
+    user_id = reg.json()["user"]["id"]
+
+    import server
+    import asyncio
+    # Simulate a new serverless container by deleting the user from db.users
+    asyncio.run(server.db.users.delete_one({"id": user_id}))
+
+    # Verify user is gone from DB
+    deleted_check = asyncio.run(server.db.users.find_one({"id": user_id}))
+    assert deleted_check is None
+
+    # Call /api/auth/me with the existing token:
+    # It must re-hydrate the user without returning 401
+    headers = {"Authorization": f"Bearer {token}"}
+    me_res = client.get("/api/auth/me", headers=headers)
+    assert me_res.status_code == 200, me_res.text
+    assert me_res.json()["id"] == user_id
+    assert me_res.json()["email"] == "coldstartuser@example.com"
+
+
+def test_login_with_email_and_password_customer(client):
+    # Customer demo user login by email
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "customer@demo.com",
+        "password": "password123"
+    })
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["user"]["email"] == "customer@demo.com"
+    assert data["user"]["role"] == "customer"
+
+
+def test_login_with_email_and_password_admin(client):
+    # Admin login by authorized email
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "shaikbashe222@gmail.com",
+        "password": "admin123"
+    })
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["user"]["email"] == "shaikbashe222@gmail.com"
+    assert data["user"]["role"] == "admin"
+
+    # Verify access to admin portal with this token
+    token = data["access_token"]
+    dash_res = client.get("/api/admin/dashboard", headers={"Authorization": f"Bearer {token}"})
+    assert dash_res.status_code == 200
+
+
+def test_login_with_email_and_wrong_password(client):
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "customer@demo.com",
+        "password": "wrongpassword"
+    })
+    assert response.status_code == 401
+
+
+def test_login_existing_user_case_insensitive_email(client):
+    # Mixed case email login
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "Customer@Demo.COM",
+        "password": "password123"
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["user"]["email"] == "customer@demo.com"
+
+    # Admin mixed case email login
+    res_admin = client.post("/api/auth/login", json={
+        "email_or_phone": "ShaikBashe222@Gmail.COM",
+        "password": "admin123"
+    })
+    assert res_admin.status_code == 200, res_admin.text
+    assert res_admin.json()["user"]["role"] == "admin"
+
+
+def test_login_existing_account_without_password_hash(client):
+    import asyncio
+    from server import db
+
+    async def setup_legacy_user():
+        await db.users.delete_many({"phone": "9811122233"})
+        await db.users.insert_one({
+            "id": "legacy-user-1",
+            "name": "Legacy User",
+            "phone": "9811122233",
+            "email": "legacy@example.com",
+            "role": "customer",
+            "languages": ["en"],
+            "password_hash": None,
+            "status": "active"
+        })
+
+    asyncio.run(setup_legacy_user())
+
+    # Login with a new chosen password should set it and authenticate
+    response = client.post("/api/auth/login", json={
+        "email_or_phone": "legacy@example.com",
+        "password": "mypassword123"
+    })
+    assert response.status_code == 200, response.text
+    token = response.json()["access_token"]
+
+    # Verify subsequent /api/auth/me succeeds with token
+    me_res = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_res.status_code == 200
+    assert me_res.json()["name"] == "Legacy User"
+
+
+
+

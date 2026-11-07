@@ -1,8 +1,17 @@
 // Shared API configuration and helpers.
 
-// Empty means "same origin" (the production image serves the API and the SPA together).
-export const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || '';
+// In production (live deployment), always use same-origin relative URL ('')
+// so requests route through the deployed domain over HTTPS without Mixed Content errors.
+const isLocalhost = typeof window !== 'undefined' && (
+  window.location.hostname === 'localhost' ||
+  window.location.hostname === '127.0.0.1'
+);
+
+export const BACKEND_URL = isLocalhost
+  ? (process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000')
+  : '';
 export const API = `${BACKEND_URL}/api`;
+
 
 // Turn an axios error into a human-readable string. FastAPI returns `detail` as a
 // string for HTTPException but as an array of objects for validation errors (422);
@@ -28,12 +37,30 @@ export const getErrorMessage = (error, fallback = 'Something went wrong') => {
       .join('; ');
   }
 
+  if (error?.code === 'auth/unauthorized-domain') {
+    return 'Domain unauthorized: please add this domain to Firebase Console > Authentication > Settings > Authorized domains.';
+  }
+
+  if (error?.code === 'auth/popup-blocked') {
+    return 'Pop-up was blocked by your browser. Please allow pop-ups for this site in your address bar or follow the Google redirect.';
+  }
+
+  if (error?.code === 'auth/popup-closed-by-user') {
+
+    return 'Sign-in was cancelled.';
+  }
+
   if (error?.request && !error?.response) {
     return 'Unable to reach the server. Please check your connection and try again.';
   }
 
+  if (typeof error?.message === 'string' && error.message && !error?.response) {
+    return error.message;
+  }
+
   return fallback;
 };
+
 
 // Resolve an uploaded file path (e.g. "/uploads/x.jpg") to a full URL.
 export const assetUrl = (path) => {

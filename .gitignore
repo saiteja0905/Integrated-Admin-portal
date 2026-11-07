@@ -94,3 +94,4 @@ android-sdk/ -e
 scratch/
 uploads/
 backend/uploads/
+.env*
